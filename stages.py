@@ -61,14 +61,24 @@ def stage2_cases(llm, requirements: str, plan: str, out_dir: Path) -> list[dict]
     print("▶ Stage 2: Writing test cases...")
 
     # ── Pass 1: Estimator ─────────────────────────────────────────────────────
-    # Ask the LLM to plan coverage before writing cases. This small call tells
-    # us how many cases each requirement needs, which drives the chunking decision.
+    # Calculate hard constraints from PRD size and provider token budget,
+    # then pass them to the estimator so case counts are always achievable.
+    prd_words = len(requirements.split())
+    max_total_cases = llm.max_output_tokens // TOKENS_PER_CASE
+
+    print(f"  • PRD size: {prd_words} words | provider budget: "
+          f"{llm.max_output_tokens} tokens → max {max_total_cases} cases")
     print("  • Pass 1/2: Estimating coverage...")
+
     estimate = llm.complete_json(
         system=ESTIMATOR_SYSTEM,
         user=(
             f"<requirements>\n{requirements}\n</requirements>\n\n"
             f"<test_plan>\n{plan}\n</test_plan>\n\n"
+            f"<budget>\n"
+            f"prd_words: {prd_words}\n"
+            f"max_total_cases: {max_total_cases}\n"
+            f"</budget>\n\n"
             "Return your coverage plan."
         ),
         max_tokens=2000,
@@ -78,6 +88,14 @@ def stage2_cases(llm, requirements: str, plan: str, out_dir: Path) -> list[dict]
         raise ValueError(f"Estimator returned no per-requirement counts: {estimate}")
 
     total = sum(per_req.values())
+
+    # Safety clamp: if the LLM ignored the budget constraint, enforce it here
+    if total > max_total_cases:
+        scale = max_total_cases / total
+        per_req = {k: max(1, round(v * scale)) for k, v in per_req.items()}
+        total = sum(per_req.values())
+        print(f"  ⚠ Estimator exceeded budget — scaled down to {total} cases")
+
     print(f"  ✓ LLM plans {total} cases across {len(per_req)} requirements: "
           f"{dict(per_req)}")
     if estimate.get("reasoning"):

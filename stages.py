@@ -31,10 +31,12 @@ def stage1_plan(llm, requirements: str, out_dir: Path) -> str:
     Writes test_plan.md to out_dir and returns the markdown string.
     """
     print("▶ Stage 1: Writing test plan...")
+    # Cap at 3000 tokens — a thorough IEEE 829 plan rarely needs more.
+    # Requesting 8000 burns the entire per-minute TPM budget in one shot on free tiers.
     plan = llm.complete(
         system=PLANNER_SYSTEM,
         user=f"<requirements>\n{requirements}\n</requirements>\n\nWrite the test plan.",
-        max_tokens=8000,
+        max_tokens=min(3000, llm.max_output_tokens),
     )
     # Write to disk immediately so --skip-stage 1 can reload it on the next run
     (out_dir / "test_plan.md").write_text(plan)
@@ -81,7 +83,7 @@ def stage2_cases(llm, requirements: str, plan: str, out_dir: Path) -> list[dict]
             f"</budget>\n\n"
             "Return your coverage plan."
         ),
-        max_tokens=2000,
+        max_tokens=500,  # estimator returns a tiny JSON object — 500 tokens is plenty
     )
     per_req = estimate.get("cases_per_requirement", {})
     if not per_req:

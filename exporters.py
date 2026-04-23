@@ -390,3 +390,289 @@ def export_markdown(cases: list[dict], out_dir: Path) -> Path:
 
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Test Plan exporters — PDF / DOCX / HTML
+# ──────────────────────────────────────────────────────────────────────────────
+def export_plan(plan_md: str, out_dir: Path, formats: list[str]) -> dict[str, Path]:
+    """Export the test plan markdown to PDF/DOCX/HTML. Returns {format: path}."""
+    results = {}
+    handlers = {
+        "html": export_plan_html,
+        "pdf": export_plan_pdf,
+        "docx": export_plan_docx,
+    }
+    for fmt in formats:
+        fn = handlers.get(fmt)
+        if not fn:
+            continue
+        try:
+            results[fmt] = fn(plan_md, out_dir)
+        except SystemExit:
+            raise
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠ plan {fmt} export failed: {e}")
+    return results
+
+
+def export_plan_html(plan_md: str, out_dir: Path) -> Path:
+    """Render the test plan markdown as a self-contained styled HTML page."""
+    try:
+        import markdown as md_lib
+    except ImportError:
+        raise SystemExit("HTML plan export needs: pip install markdown")
+
+    body = md_lib.markdown(
+        plan_md,
+        extensions=["tables", "fenced_code", "toc", "sane_lists"],
+    )
+    path = out_dir / "test_plan.html"
+    page = f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Test Plan</title>
+<style>
+  :root {{ --fg:#1a1a1a; --muted:#666; --bg:#fafafa; --card:#fff; --accent:#2C3E50;
+          --border:#e5e5e5; }}
+  body {{ font-family: -apple-system,"Segoe UI",system-ui,sans-serif;
+          max-width: 820px; margin: 2rem auto; padding: 0 1.5rem;
+          background: var(--bg); color: var(--fg); line-height: 1.6; }}
+  h1 {{ color: var(--accent); border-bottom: 2px solid var(--accent); padding-bottom:.4rem;
+        margin-top:0; font-size: 1.9rem; }}
+  h2 {{ color: var(--accent); margin-top: 2rem; font-size: 1.4rem;
+        border-bottom: 1px solid var(--border); padding-bottom: .25rem; }}
+  h3 {{ color: var(--accent); font-size: 1.1rem; margin-top: 1.5rem; }}
+  table {{ border-collapse: collapse; width: 100%; margin: 1rem 0;
+           background: var(--card); border-radius: 6px; overflow: hidden; }}
+  th, td {{ padding: .55rem .8rem; text-align: left; border-bottom: 1px solid var(--border); }}
+  th {{ background: var(--accent); color: white; font-weight: 600; }}
+  tr:last-child td {{ border-bottom: none; }}
+  code {{ background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-size: .9em; }}
+  ul, ol {{ padding-left: 1.5rem; }}
+  li {{ margin: .25rem 0; }}
+  blockquote {{ border-left: 3px solid var(--accent); padding: .25rem 1rem;
+                color: var(--muted); margin: 1rem 0; background: #f5f5f5; }}
+</style></head><body>{body}</body></html>"""
+    path.write_text(page, encoding="utf-8")
+    return path
+
+
+def export_plan_pdf(plan_md: str, out_dir: Path) -> Path:
+    """Render the test plan as a PDF using reportlab (pure Python, no OS deps)."""
+    try:
+        from reportlab.lib.pagesizes import LETTER
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.lib.colors import HexColor
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
+        )
+    except ImportError:
+        raise SystemExit("PDF plan export needs: pip install reportlab")
+
+    path = out_dir / "test_plan.pdf"
+    doc = SimpleDocTemplate(
+        str(path), pagesize=LETTER,
+        rightMargin=0.75 * inch, leftMargin=0.75 * inch,
+        topMargin=0.75 * inch, bottomMargin=0.75 * inch,
+    )
+    styles = getSampleStyleSheet()
+    accent = HexColor("#2C3E50")
+    styles.add(ParagraphStyle("H1Custom", parent=styles["Heading1"],
+                              textColor=accent, spaceAfter=12, fontSize=18))
+    styles.add(ParagraphStyle("H2Custom", parent=styles["Heading2"],
+                              textColor=accent, spaceAfter=8, fontSize=14))
+    styles.add(ParagraphStyle("H3Custom", parent=styles["Heading3"],
+                              textColor=accent, spaceAfter=6, fontSize=12))
+    styles.add(ParagraphStyle("BodyCustom", parent=styles["BodyText"],
+                              fontSize=10.5, leading=14, spaceAfter=6))
+
+    story = []
+    for block in _parse_md_blocks(plan_md):
+        kind, text = block
+        if kind == "h1":
+            story.append(Paragraph(_escape_pdf(text), styles["H1Custom"]))
+        elif kind == "h2":
+            story.append(Paragraph(_escape_pdf(text), styles["H2Custom"]))
+        elif kind == "h3":
+            story.append(Paragraph(_escape_pdf(text), styles["H3Custom"]))
+        elif kind == "table":
+            tbl = _md_table_to_reportlab(text)
+            if tbl:
+                story.append(tbl)
+                story.append(Spacer(1, 8))
+        elif kind == "list":
+            for item in text.split("\n"):
+                story.append(Paragraph(f"• {_escape_pdf(item.lstrip('- ').lstrip('* '))}",
+                                       styles["BodyCustom"]))
+        elif kind == "p" and text.strip():
+            story.append(Paragraph(_escape_pdf(text), styles["BodyCustom"]))
+        elif kind == "blank":
+            story.append(Spacer(1, 6))
+
+    doc.build(story)
+    return path
+
+
+def export_plan_docx(plan_md: str, out_dir: Path) -> Path:
+    """Render the test plan as a .docx using python-docx."""
+    try:
+        from docx import Document
+        from docx.shared import Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH  # noqa: F401
+    except ImportError:
+        raise SystemExit("DOCX plan export needs: pip install python-docx")
+
+    path = out_dir / "test_plan.docx"
+    doc = Document()
+    style = doc.styles["Normal"]
+    style.font.name = "Calibri"
+    style.font.size = Pt(11)
+
+    accent = RGBColor(0x2C, 0x3E, 0x50)
+
+    for kind, text in _parse_md_blocks(plan_md):
+        if kind == "h1":
+            h = doc.add_heading(_strip_md(text), level=1)
+            for run in h.runs:
+                run.font.color.rgb = accent
+        elif kind == "h2":
+            h = doc.add_heading(_strip_md(text), level=2)
+            for run in h.runs:
+                run.font.color.rgb = accent
+        elif kind == "h3":
+            h = doc.add_heading(_strip_md(text), level=3)
+            for run in h.runs:
+                run.font.color.rgb = accent
+        elif kind == "table":
+            rows = _md_table_rows(text)
+            if rows:
+                table = doc.add_table(rows=len(rows), cols=len(rows[0]))
+                table.style = "Light Grid Accent 1"
+                for i, row in enumerate(rows):
+                    for j, cell in enumerate(row):
+                        table.cell(i, j).text = cell
+                doc.add_paragraph()
+        elif kind == "list":
+            for item in text.split("\n"):
+                doc.add_paragraph(_strip_md(item.lstrip("- ").lstrip("* ")),
+                                  style="List Bullet")
+        elif kind == "p" and text.strip():
+            doc.add_paragraph(_strip_md(text))
+
+    doc.save(path)
+    return path
+
+
+# ─── Markdown → block parsing helpers (minimal, no full-MD parser needed) ────
+def _parse_md_blocks(md: str) -> list[tuple[str, str]]:
+    """Very lightweight MD → (kind, text) blocks. Good enough for our test plans."""
+    blocks = []
+    lines = md.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.rstrip()
+
+        if not stripped:
+            blocks.append(("blank", ""))
+            i += 1
+            continue
+
+        if stripped.startswith("# "):
+            blocks.append(("h1", stripped[2:].strip()))
+            i += 1
+        elif stripped.startswith("## "):
+            blocks.append(("h2", stripped[3:].strip()))
+            i += 1
+        elif stripped.startswith("### "):
+            blocks.append(("h3", stripped[4:].strip()))
+            i += 1
+        elif "|" in stripped and i + 1 < len(lines) and "---" in lines[i + 1]:
+            # Markdown table
+            tbl = [stripped]
+            i += 1  # header separator
+            tbl.append(lines[i])
+            i += 1
+            while i < len(lines) and "|" in lines[i]:
+                tbl.append(lines[i])
+                i += 1
+            blocks.append(("table", "\n".join(tbl)))
+        elif stripped.startswith(("- ", "* ")):
+            items = [stripped]
+            i += 1
+            while i < len(lines) and lines[i].startswith(("- ", "* ")):
+                items.append(lines[i])
+                i += 1
+            blocks.append(("list", "\n".join(items)))
+        else:
+            # Paragraph (gather consecutive non-blank, non-header lines)
+            para = [stripped]
+            i += 1
+            while i < len(lines) and lines[i].strip() and not lines[i].startswith(
+                ("#", "- ", "* ", "|")
+            ):
+                para.append(lines[i].strip())
+                i += 1
+            blocks.append(("p", " ".join(para)))
+
+    return blocks
+
+
+def _md_table_rows(md_table: str) -> list[list[str]]:
+    """Extract rows from a markdown table string."""
+    lines = [ln for ln in md_table.splitlines() if "|" in ln and "---" not in ln]
+    rows = []
+    for ln in lines:
+        parts = [p.strip() for p in ln.strip("|").split("|")]
+        rows.append([_strip_md(p) for p in parts])
+    return rows
+
+
+def _md_table_to_reportlab(md_table: str):
+    """Convert a markdown table to a reportlab Table with accent header."""
+    try:
+        from reportlab.platypus import Table, TableStyle
+        from reportlab.lib.colors import HexColor, whitesmoke
+    except ImportError:
+        return None
+
+    rows = _md_table_rows(md_table)
+    if not rows:
+        return None
+
+    # Wrap cells in Paragraphs for wrapping
+    from reportlab.platypus import Paragraph
+    from reportlab.lib.styles import getSampleStyleSheet
+    styles = getSampleStyleSheet()
+    small = styles["BodyText"]
+    wrapped = [[Paragraph(_escape_pdf(cell), small) for cell in row] for row in rows]
+
+    t = Table(wrapped, repeatRows=1, hAlign="LEFT")
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#2C3E50")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), whitesmoke),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+        ("TOPPADDING", (0, 0), (-1, 0), 6),
+        ("GRID", (0, 0), (-1, -1), 0.25, HexColor("#CCCCCC")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    return t
+
+
+def _strip_md(s: str) -> str:
+    """Strip inline markdown markers (**bold**, *italic*, `code`)."""
+    import re as _re
+    s = _re.sub(r"\*\*(.+?)\*\*", r"\1", s)
+    s = _re.sub(r"\*(.+?)\*", r"\1", s)
+    s = _re.sub(r"`(.+?)`", r"\1", s)
+    return s
+
+
+def _escape_pdf(s: str) -> str:
+    """Escape HTML-ish chars for reportlab Paragraph + convert simple MD."""
+    import re as _re
+    s = _strip_md(s)
+    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return s

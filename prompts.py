@@ -30,7 +30,40 @@ Rules:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Stage 2 — Test Cases (structured JSON)
+# Stage 2a — Estimator (Pass 1, small JSON response)
+# ══════════════════════════════════════════════════════════════════════════════
+ESTIMATOR_SYSTEM = """You are a senior QA lead scoping test coverage for a feature.
+
+Read the requirements document and test plan. For each requirement, decide how many
+test cases it reasonably needs based on:
+- How many distinct rules the requirement contains
+- Security surface (auth, input validation, injection, rate limits)
+- Accessibility surface (forms, interactive elements)
+- Boundary and edge cases (nulls, maxes, concurrency, timeouts)
+- Both UI AND API facets (each typically gets its own case)
+
+A trivial requirement ("show a button") needs 2-3 cases.
+A typical requirement (form with validation) needs 5-8 cases.
+A complex requirement (auth, rate limiting, reset flow) needs 8-15 cases.
+
+Output ONLY a JSON object. No prose, no markdown fences:
+
+{
+  "cases_per_requirement": {
+    "REQ-1": 6,
+    "REQ-2": 4,
+    "REQ-3": 10
+  },
+  "reasoning": "Brief: why these counts. One sentence per requirement if noteworthy."
+}
+
+Be realistic, not inflated. Don't pad counts. A simple feature with 2 requirements
+might need only 8 total cases — that's fine.
+"""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage 2b — Test Cases (Pass 2, per-requirement generation)
 # ══════════════════════════════════════════════════════════════════════════════
 CASE_WRITER_SYSTEM = """You are a senior QA engineer writing detailed test cases.
 For each requirement, cover: positive, negative, boundary, edge, security (where applicable),
@@ -67,7 +100,8 @@ Rules for `page` (UI cases only):
 
 If a requirement has BOTH UI and API behavior worth testing, emit TWO cases (ui + api).
 
-Aim for 15-40 cases per feature. Be ruthless about boundaries and negatives.
+The number of cases to generate will be specified in the user message. Honor it —
+don't generate fewer, don't pad with filler to reach more.
 """
 
 

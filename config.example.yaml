@@ -1,21 +1,21 @@
-# QA Agent config. Pick ONE llm block, comment out the others.
+# Specwright config. Pick ONE llm block, comment out the others.
+
+# ── Groq (DEFAULT — free, fast, stable) ─────────────────────────────────────
+# Install: pip install groq
+# Get key: https://console.groq.com/keys
+llm:
+  provider: groq
+  model: llama-3.3-70b-versatile    # or: qwen/qwen3-32b, deepseek-r1-distill-llama-70b
+  api_key: ${GROQ_API_KEY}
+  temperature: 0.2
 
 # ── Gemini (Google, free tier: 15 req/min on 2.5 Flash) ─────────────────────
 # Install: pip install google-genai
 # Get key: https://aistudio.google.com/apikey
-llm:
-  provider: gemini
-  model: gemini-2.5-flash           # or gemini-2.5-pro for harder tasks
-  api_key: ${GEMINI_API_KEY}        # env var substitution
-  temperature: 0.2
-
-# ── Groq (free tier, fastest) ────────────────────────────────────────────────
-# Install: pip install groq
-# Get key: https://console.groq.com/keys
 # llm:
-#   provider: groq
-#   model: llama-3.3-70b-versatile    # or: qwen/qwen3-32b, deepseek-r1-distill-llama-70b
-#   api_key: ${GROQ_API_KEY}
+#   provider: gemini
+#   model: gemini-2.5-flash           # or gemini-2.5-pro for harder tasks
+#   api_key: ${GEMINI_API_KEY}        # env var substitution
 #   temperature: 0.2
 
 # ── Ollama (local, 100% free, no API key) ───────────────────────────────────

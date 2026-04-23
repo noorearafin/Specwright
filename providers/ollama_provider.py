@@ -16,6 +16,7 @@ from .base import LLMProvider
 
 class OllamaProvider(LLMProvider):
     name = "ollama"
+    max_output_tokens = 8000  # conservative; depends on model context window
 
     def __init__(self, model: str = "llama3.1:8b",
                  base_url: str = "http://localhost:11434",

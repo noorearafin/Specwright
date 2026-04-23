@@ -16,6 +16,11 @@ class LLMProvider(ABC):
 
     name: str = "base"
 
+    # Maximum output tokens this provider/model will reliably produce in a
+    # single call. Subclasses override this. Stage 2 uses it to decide whether
+    # to chunk generation per-requirement.
+    max_output_tokens: int = 8000
+
     @abstractmethod
     def complete(self, system: str, user: str, max_tokens: int = 8000,
                  temperature: float = 0.2) -> str:
@@ -24,7 +29,10 @@ class LLMProvider(ABC):
     def complete_json(self, system: str, user: str, max_tokens: int = 16000,
                       temperature: float = 0.1):
         """Call complete() and parse JSON. Strips markdown fences if present."""
-        raw = self.complete(system, user, max_tokens=max_tokens, temperature=temperature)
+        # Clamp to the provider's real capacity so we never ask for more than
+        # it can return (silent truncation → JSON parse errors).
+        safe_max = min(max_tokens, self.max_output_tokens)
+        raw = self.complete(system, user, max_tokens=safe_max, temperature=temperature)
         return _parse_json(raw)
 
 

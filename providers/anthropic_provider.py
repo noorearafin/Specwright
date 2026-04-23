@@ -12,6 +12,7 @@ from .base import LLMProvider
 
 class AnthropicProvider(LLMProvider):
     name = "anthropic"
+    max_output_tokens = 32000  # Claude Sonnet/Opus 4.x support very large outputs
 
     def __init__(self, model: str = "claude-sonnet-4-6",
                  api_key: str | None = None, temperature: float = 0.2):

@@ -15,6 +15,7 @@ from .base import LLMProvider
 
 class GeminiProvider(LLMProvider):
     name = "gemini"
+    max_output_tokens = 8000  # Gemini 2.5 Flash/Pro single-call output ceiling
 
     def __init__(self, model: str = "gemini-2.5-flash",
                  api_key: str | None = None, temperature: float = 0.2):

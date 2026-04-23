@@ -4,8 +4,13 @@ pandas>=2.0.0
 pyyaml>=6.0
 openpyxl>=3.1.0
 
-# Pick ONE LLM provider (or install multiple to switch freely)
-google-genai>=0.1.0       # Gemini (free, recommended)
-# groq>=0.4.0             # Groq (free)
-# ollama>=0.3.0           # Ollama (local, free)
-# anthropic>=0.40.0       # Anthropic Claude (paid)
+# Test plan export formats
+markdown>=3.5.0       # MD → HTML
+reportlab>=4.0.0      # PDF
+python-docx>=1.1.0    # DOCX
+
+# LLM providers — install the one you'll use
+groq>=0.4.0              # DEFAULT (free, fast)
+# google-genai>=0.1.0    # Gemini (free)
+# ollama>=0.3.0          # Ollama (local, free)
+# anthropic>=0.40.0      # Anthropic Claude (paid)

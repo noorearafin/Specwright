@@ -1,12 +1,7 @@
-"""QA Agent — Streamlit UI
+"""Specwright — Streamlit UI for QA Agent.
 
-Single-page app that walks through the pipeline:
-  1. Configure LLM provider
-  2. Upload/paste PRD
-  3. Generate test plan
-  4. Generate test cases → download in 6 formats
-  5. Pick scope (preset or custom)
-  6. Generate Playwright suite → download ZIP
+PRD → Test Plan → Editable Test Cases → Scope Gate → Playwright TS suite.
+Default LLM: Groq (free, fast). Fallback: Gemini, Ollama, Anthropic.
 
 Run:  streamlit run app.py
 """
@@ -18,6 +13,7 @@ import os
 import tempfile
 import traceback
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -26,30 +22,175 @@ import streamlit as st
 from providers import get_provider
 from stages import stage1_plan, stage2_cases, stage3_automate
 from scope import PRESETS, apply_scope
-from exporters import run_exports
+from exporters import run_exports, export_plan
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Page setup & state
-# ──────────────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Page setup
+# ══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="QA Agent",
+    page_title="Specwright",
     page_icon="🧪",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
+# ── Custom CSS ────────────────────────────────────────────────────────────────
+CUSTOM_CSS = """
+<style>
+  /* Hero header with gradient accent */
+  .sw-hero {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 1.5rem 1.75rem;
+    border-radius: 14px;
+    margin-bottom: 1.25rem;
+    box-shadow: 0 4px 20px rgba(102, 126, 234, 0.25);
+  }
+  .sw-hero h1 {
+    color: white !important;
+    margin: 0;
+    font-size: 1.9rem;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+  .sw-hero p {
+    color: rgba(255,255,255,0.85);
+    margin: 0.35rem 0 0;
+    font-size: 0.95rem;
+  }
+
+  /* Progress stepper */
+  .sw-stepper {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin: 0 0 1.5rem;
+    padding: 0.75rem 0;
+  }
+  .sw-step {
+    flex: 1;
+    padding: 0.6rem 0.5rem;
+    text-align: center;
+    border-radius: 10px;
+    border: 1px solid #e5e7eb;
+    background: #f9fafb;
+    font-size: 0.82rem;
+    color: #6b7280;
+    font-weight: 500;
+    transition: all 0.2s;
+    position: relative;
+  }
+  .sw-step.done {
+    background: #d1fae5;
+    border-color: #10b981;
+    color: #065f46;
+  }
+  .sw-step.active {
+    background: #ede9fe;
+    border-color: #7c3aed;
+    color: #5b21b6;
+    box-shadow: 0 2px 8px rgba(124, 58, 237, 0.2);
+    font-weight: 600;
+  }
+  .sw-step-num {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.1);
+    color: inherit;
+    font-size: 0.7rem;
+    line-height: 20px;
+    text-align: center;
+    margin-right: 0.3rem;
+    font-weight: 700;
+  }
+  .sw-step.done .sw-step-num { background: #10b981; color: white; }
+  .sw-step.active .sw-step-num { background: #7c3aed; color: white; }
+
+  /* Section cards - softer than default borders */
+  [data-testid="stVerticalBlock"] > [style*="border"] {
+    border-radius: 12px !important;
+  }
+
+  /* Priority badges in data_editor */
+  .sw-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .sw-badge-p0 { background: #fee2e2; color: #991b1b; }
+  .sw-badge-p1 { background: #fef3c7; color: #92400e; }
+  .sw-badge-p2 { background: #f3f4f6; color: #374151; }
+
+  /* Error banner */
+  .sw-error {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    margin: 0.5rem 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .sw-error-text {
+    color: #991b1b;
+    font-weight: 500;
+    font-size: 0.9rem;
+  }
+
+  /* Metric cards with subtle color */
+  [data-testid="stMetric"] {
+    background: #f8fafc;
+    padding: 0.75rem;
+    border-radius: 10px;
+    border: 1px solid #e2e8f0;
+  }
+
+  /* Buttons more prominent */
+  .stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+  }
+  .stButton > button[kind="primary"]:hover {
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    transform: translateY(-1px);
+  }
+
+  /* Sidebar tighter */
+  section[data-testid="stSidebar"] > div {
+    padding-top: 1rem;
+  }
+
+  /* Hide the default Streamlit header/menu for a cleaner look */
+  #MainMenu {visibility: hidden;}
+  footer {visibility: hidden;}
+</style>
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Session state
+# ══════════════════════════════════════════════════════════════════════════════
 DEFAULTS = {
     "prd_text": "",
     "plan": None,
     "cases": None,
+    "cases_original": None,     # track edits vs initial
     "scope_selection": "regression",
     "custom_priorities": [],
     "custom_types": [],
     "custom_targets": [],
-    "workspace": None,           # Path to temp dir with everything
+    "workspace": None,
     "stage3_done": False,
-    "error": None,
+    "errors": [],               # list of {stage, short, detail, time}
 }
 for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
@@ -57,41 +198,89 @@ for k, v in DEFAULTS.items():
 
 def get_workspace() -> Path:
     if st.session_state.workspace is None:
-        st.session_state.workspace = Path(tempfile.mkdtemp(prefix="qa_agent_"))
+        st.session_state.workspace = Path(tempfile.mkdtemp(prefix="specwright_"))
     return st.session_state.workspace
 
 
 def reset_from(stage: int) -> None:
-    """Clear downstream state when upstream inputs change."""
     if stage <= 1:
         st.session_state.plan = None
     if stage <= 2:
         st.session_state.cases = None
+        st.session_state.cases_original = None
     if stage <= 3:
         st.session_state.stage3_done = False
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Sidebar — provider config
-# ──────────────────────────────────────────────────────────────────────────────
+def current_stage() -> int:
+    """Determine active step (1-5) based on what's done."""
+    if st.session_state.stage3_done:
+        return 5
+    if st.session_state.cases:
+        return 4
+    if st.session_state.plan:
+        return 3
+    if st.session_state.prd_text:
+        return 2
+    return 1
+
+
+def log_error(stage: str, exc: Exception) -> None:
+    """Record an error for collapsed display."""
+    st.session_state.errors.append({
+        "stage": stage,
+        "short": f"{type(exc).__name__}: {str(exc)[:120]}",
+        "detail": f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}",
+        "time": datetime.now().strftime("%H:%M:%S"),
+    })
+
+
+def _run_safe(stage_label: str, fn, *args, **kwargs):
+    """Run fn under a spinner. On error, log and return None — caller handles UI."""
+    try:
+        with st.spinner(stage_label):
+            return fn(*args, **kwargs)
+    except SystemExit as e:
+        log_error(stage_label, Exception(str(e)))
+    except Exception as e:  # noqa: BLE001
+        log_error(stage_label, e)
+    return None
+
+
+def _dl_button(col, path: Path, label: str, mime: str, key_suffix: str = "") -> None:
+    if path.exists():
+        col.download_button(
+            f"⬇ {label}",
+            data=path.read_bytes(),
+            file_name=path.name,
+            mime=mime,
+            use_container_width=True,
+            key=f"dl_{path.name}_{key_suffix}",
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Sidebar — Provider config (Groq default)
+# ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("### ⚙️ LLM Provider")
+
     provider_choice = st.selectbox(
         "Provider",
-        ["gemini", "groq", "ollama", "anthropic"],
+        ["groq", "gemini", "ollama", "anthropic"],
         index=0,
-        help="Gemini is the recommended free default.",
+        help="Groq is recommended — free, fast, stable.",
     )
 
     MODEL_DEFAULTS = {
-        "gemini": "gemini-2.5-flash",
         "groq": "llama-3.3-70b-versatile",
+        "gemini": "gemini-2.5-flash",
         "ollama": "llama3.1:8b",
         "anthropic": "claude-sonnet-4-6",
     }
     KEY_ENV = {
-        "gemini": "GEMINI_API_KEY",
         "groq": "GROQ_API_KEY",
+        "gemini": "GEMINI_API_KEY",
         "ollama": None,
         "anthropic": "ANTHROPIC_API_KEY",
     }
@@ -108,13 +297,12 @@ with st.sidebar:
             api_key = st.text_input(
                 f"{env_name}",
                 type="password",
-                help=f"Or set {env_name} env var and restart the app",
+                help=f"Or set {env_name} env var and restart",
             )
     else:
         st.info("Ollama runs locally — make sure `ollama serve` is running.")
 
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.1,
-                            help="Lower = more deterministic.")
+    temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.1)
 
     llm_cfg = {
         "provider": provider_choice,
@@ -122,6 +310,17 @@ with st.sidebar:
         "api_key": api_key or None,
         "temperature": temperature,
     }
+
+    # Quick-links
+    st.markdown("### 🔗 Get a free API key")
+    if provider_choice == "groq":
+        st.markdown("[Groq Console →](https://console.groq.com/keys)")
+    elif provider_choice == "gemini":
+        st.markdown("[Google AI Studio →](https://aistudio.google.com/apikey)")
+    elif provider_choice == "anthropic":
+        st.markdown("[Anthropic Console →](https://console.anthropic.com/)")
+    elif provider_choice == "ollama":
+        st.markdown("[Download Ollama →](https://ollama.com/download)")
 
     st.divider()
     st.markdown("### 🗂 Workspace")
@@ -133,47 +332,71 @@ with st.sidebar:
         st.rerun()
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Main header
-# ──────────────────────────────────────────────────────────────────────────────
-st.title("🧪 QA Agent")
-st.caption("PRD → Test Plan → Test Cases → Playwright TypeScript suite")
+# ══════════════════════════════════════════════════════════════════════════════
+# Hero + progress stepper
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown(
+    """<div class="sw-hero">
+    <h1>🧪 Specwright</h1>
+    <p>PRD → Test Plan → Test Cases → Playwright TypeScript suite</p>
+    </div>""",
+    unsafe_allow_html=True,
+)
 
-if st.session_state.error:
-    st.error(st.session_state.error)
-    if st.button("Dismiss error"):
-        st.session_state.error = None
-        st.rerun()
-
-
-def _run_safe(label: str, fn, *args, **kwargs):
-    """Wrap a stage call; show spinner; capture errors to session."""
-    try:
-        with st.spinner(label):
-            return fn(*args, **kwargs)
-    except SystemExit as e:
-        st.session_state.error = f"Setup issue: {e}"
-        st.rerun()
-    except Exception as e:  # noqa: BLE001
-        st.session_state.error = f"{type(e).__name__}: {e}\n\n```\n{traceback.format_exc()}\n```"
-        st.rerun()
-
-
-def _dl_button(col, path: Path, label: str, mime: str) -> None:
-    """Render a download button for a file in the workspace, if it exists."""
-    if path.exists():
-        col.download_button(
-            f"⬇ {label}",
-            data=path.read_bytes(),
-            file_name=path.name,
-            mime=mime,
-            use_container_width=True,
-            key=f"dl_{path.name}",
-        )
+STEPS = [
+    ("Requirements", 1),
+    ("Test Plan", 2),
+    ("Test Cases", 3),
+    ("Scope", 4),
+    ("Suite", 5),
+]
+active = current_stage()
+stepper_html = '<div class="sw-stepper">'
+for label, num in STEPS:
+    cls = "done" if num < active else ("active" if num == active else "")
+    stepper_html += (
+        f'<div class="sw-step {cls}">'
+        f'<span class="sw-step-num">{num}</span>{label}'
+        f'</div>'
+    )
+stepper_html += "</div>"
+st.markdown(stepper_html, unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Stage 0 — PRD input
+# Error banner — collapsed, clickable for details
+# ══════════════════════════════════════════════════════════════════════════════
+if st.session_state.errors:
+    n = len(st.session_state.errors)
+    latest = st.session_state.errors[-1]
+    err_col1, err_col2, err_col3 = st.columns([5, 1, 1])
+    with err_col1:
+        st.markdown(
+            f'<div class="sw-error">'
+            f'<span class="sw-error-text">⚠️ {latest["stage"]} — '
+            f'{n} error{"s" if n > 1 else ""} occurred. Click for details.</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    with err_col2:
+        show_details = st.toggle("Details", key="show_error_details")
+    with err_col3:
+        if st.button("Clear", use_container_width=True, key="clear_errors"):
+            st.session_state.errors = []
+            st.rerun()
+
+    if show_details:
+        tabs = st.tabs([f"#{i + 1} · {e['stage'][:15]}" for i, e in enumerate(st.session_state.errors)])
+        for tab, err in zip(tabs, st.session_state.errors):
+            with tab:
+                st.caption(f"Time: {err['time']}")
+                st.error(err["short"])
+                with st.expander("Full traceback", expanded=True):
+                    st.code(err["detail"], language="text")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage ① — Requirements
 # ══════════════════════════════════════════════════════════════════════════════
 with st.container(border=True):
     st.subheader("① Requirements")
@@ -182,8 +405,9 @@ with st.container(border=True):
         ["📎 Upload file", "✍️ Paste text", "📋 Use sample"]
     )
     with tab_upload:
-        uploaded = st.file_uploader("PRD / SRS / BRD", type=["md", "txt"],
-                                    label_visibility="collapsed")
+        uploaded = st.file_uploader(
+            "PRD / SRS / BRD", type=["md", "txt"], label_visibility="collapsed",
+        )
         if uploaded:
             text = uploaded.read().decode("utf-8", errors="replace")
             if text != st.session_state.prd_text:
@@ -207,12 +431,12 @@ with st.container(border=True):
                 st.rerun()
 
     if st.session_state.prd_text:
-        with st.expander(f"Preview ({len(st.session_state.prd_text)} chars)"):
+        with st.expander(f"📖 Preview ({len(st.session_state.prd_text):,} chars)"):
             st.markdown(st.session_state.prd_text)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Stage 1 — Test Plan
+# Stage ② — Test Plan (editable + PDF/DOCX/HTML downloads)
 # ══════════════════════════════════════════════════════════════════════════════
 with st.container(border=True):
     st.subheader("② Test Plan")
@@ -230,41 +454,54 @@ with st.container(border=True):
                 )
                 if plan:
                     st.session_state.plan = plan
+                    # Export plan in 3 formats immediately
+                    _run_safe(
+                        "Exporting plan to PDF/DOCX/HTML...",
+                        export_plan, plan, get_workspace(), ["html", "pdf", "docx"],
+                    )
                     reset_from(2)
                     st.rerun()
-        if not can_run and st.session_state.prd_text:
-            st.caption("⚠️ Add API key above")
-        elif not st.session_state.prd_text:
-            st.caption("⚠️ Add requirements first")
+        if not can_run:
+            if not st.session_state.prd_text:
+                st.caption("⚠️ Add requirements first")
+            else:
+                st.caption("⚠️ Add API key in sidebar")
 
     with col2:
         if st.session_state.plan:
-            st.success(f"✓ Plan generated ({len(st.session_state.plan)} chars)")
+            st.success(f"✓ Plan generated · {len(st.session_state.plan):,} chars")
         else:
-            st.info("No plan yet.")
+            st.info("Click **Generate plan** to produce an IEEE-829 test plan.")
 
     if st.session_state.plan:
-        with st.expander("📄 View / edit test plan", expanded=False):
+        with st.expander("📝 Review & edit the plan", expanded=False):
             edited = st.text_area(
                 "Markdown", value=st.session_state.plan, height=400,
                 label_visibility="collapsed", key="plan_edit",
             )
-            c1, c2 = st.columns([1, 5])
-            with c1:
+            save_col, _ = st.columns([1, 5])
+            with save_col:
                 if st.button("💾 Save edits", use_container_width=True):
                     st.session_state.plan = edited
                     (get_workspace() / "test_plan.md").write_text(edited)
-                    st.toast("Saved")
-            with c2:
-                st.download_button(
-                    "⬇ Download test_plan.md",
-                    data=edited, file_name="test_plan.md", mime="text/markdown",
-                    use_container_width=True,
-                )
+                    # Re-export after edits
+                    export_plan(edited, get_workspace(), ["html", "pdf", "docx"])
+                    st.toast("Saved & re-exported", icon="✅")
+
+        # Download row — MD / HTML / PDF / DOCX
+        st.markdown("##### 📦 Download")
+        ws = get_workspace()
+        d = st.columns(4)
+        _dl_button(d[0], ws / "test_plan.md",   "Markdown", "text/markdown", "plan")
+        _dl_button(d[1], ws / "test_plan.html", "HTML",     "text/html",     "plan")
+        _dl_button(d[2], ws / "test_plan.pdf",  "PDF",      "application/pdf", "plan")
+        _dl_button(d[3], ws / "test_plan.docx", "DOCX",
+                   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                   "plan")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Stage 2 — Test Cases + Exports
+# Stage ③ — Test Cases (editable table + 6-format exports)
 # ══════════════════════════════════════════════════════════════════════════════
 with st.container(border=True):
     st.subheader("③ Test Cases")
@@ -276,12 +513,13 @@ with st.container(border=True):
             llm = _run_safe("Initializing LLM...", get_provider, llm_cfg)
             if llm:
                 cases = _run_safe(
-                    f"Stage 2 — {provider_choice} writing test cases...",
+                    f"Stage 2 — {provider_choice} writing test cases (2-pass)...",
                     stage2_cases, llm, st.session_state.prd_text,
                     st.session_state.plan, get_workspace(),
                 )
                 if cases:
                     st.session_state.cases = cases
+                    st.session_state.cases_original = json.loads(json.dumps(cases))
                     _run_safe(
                         "Exporting to 6 formats...",
                         run_exports, cases, get_workspace(),
@@ -294,21 +532,26 @@ with st.container(border=True):
 
     with col2:
         if st.session_state.cases:
-            st.success(f"✓ {len(st.session_state.cases)} cases generated")
+            cases = st.session_state.cases
+            automatable = sum(1 for c in cases if c.get("automatable", True))
+            st.success(f"✓ {len(cases)} cases · {automatable} automatable")
         else:
-            st.info("No cases yet.")
+            st.info("Click **Generate cases** to produce detailed test cases.")
 
     if st.session_state.cases:
         cases = st.session_state.cases
 
-        # Summary chips
+        # Metrics row
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total", len(cases))
-        c2.metric("Automatable", sum(1 for c in cases if c.get("automatable", True)))
-        c3.metric("UI", sum(1 for c in cases if c.get("target") == "ui"))
-        c4.metric("API", sum(1 for c in cases if c.get("target") == "api"))
+        c2.metric("P0 (critical)", sum(1 for c in cases if c.get("priority") == "P0"))
+        c3.metric("UI tests", sum(1 for c in cases if c.get("target") == "ui"))
+        c4.metric("API tests", sum(1 for c in cases if c.get("target") == "api"))
 
-        # Filterable table
+        # Editable table via data_editor
+        st.markdown("##### ✏️ Edit cases inline (add, remove, modify)")
+        st.caption("Changes auto-save and re-export to all 6 formats on every edit.")
+
         df = pd.DataFrame([{
             "ID": c.get("id", ""),
             "REQ": c.get("requirement_id", ""),
@@ -316,27 +559,78 @@ with st.container(border=True):
             "Type": c.get("type", ""),
             "Target": c.get("target", ""),
             "Priority": c.get("priority", ""),
-            "Auto": "✓" if c.get("automatable", True) else "—",
+            "Page": c.get("page", ""),
+            "Expected": c.get("expected", ""),
+            "Automatable": c.get("automatable", True),
         } for c in cases])
 
-        with st.expander(f"📋 Table ({len(cases)} cases)", expanded=True):
-            st.dataframe(df, use_container_width=True, hide_index=True, height=400)
+        edited_df = st.data_editor(
+            df,
+            use_container_width=True,
+            num_rows="dynamic",
+            hide_index=True,
+            height=420,
+            column_config={
+                "ID": st.column_config.TextColumn("ID", width="small"),
+                "REQ": st.column_config.TextColumn("REQ", width="small"),
+                "Title": st.column_config.TextColumn("Title", width="large"),
+                "Type": st.column_config.SelectboxColumn("Type", options=[
+                    "functional", "negative", "boundary", "security",
+                    "accessibility", "performance", "contract",
+                ]),
+                "Target": st.column_config.SelectboxColumn("Target", options=["ui", "api", "manual"]),
+                "Priority": st.column_config.SelectboxColumn("Priority", options=["P0", "P1", "P2"]),
+                "Expected": st.column_config.TextColumn("Expected", width="large"),
+                "Automatable": st.column_config.CheckboxColumn("Auto?"),
+            },
+            key="case_editor",
+        )
+
+        # Detect changes and re-save/re-export
+        edited_cases = []
+        for i, row in edited_df.iterrows():
+            # Preserve original fields we don't expose in the editor
+            original = next((c for c in cases if c.get("id") == row["ID"]), {})
+            edited_cases.append({
+                **original,
+                "id": row["ID"],
+                "requirement_id": row["REQ"],
+                "title": row["Title"],
+                "type": row["Type"],
+                "target": row["Target"],
+                "priority": row["Priority"],
+                "page": row["Page"] or None,
+                "expected": row["Expected"],
+                "automatable": bool(row["Automatable"]),
+            })
+
+        if edited_cases != cases:
+            st.session_state.cases = edited_cases
+            ws = get_workspace()
+            (ws / "test_cases.json").write_text(json.dumps(edited_cases, indent=2))
+            try:
+                run_exports(edited_cases, ws,
+                            ["csv", "excel", "jira", "testrail", "html", "markdown"])
+            except Exception as e:
+                log_error("Stage 2 edit re-export", e)
+            st.toast(f"Saved · {len(edited_cases)} cases", icon="✅")
+            st.rerun()
 
         # Downloads — 6 formats
-        st.markdown("##### 📦 Download")
+        st.markdown("##### 📦 Download test cases")
         ws = get_workspace()
         d = st.columns(6)
-        _dl_button(d[0], ws / "test_cases.csv",          "CSV",       "text/csv")
+        _dl_button(d[0], ws / "test_cases.csv",          "CSV",       "text/csv", "cases")
         _dl_button(d[1], ws / "test_cases.xlsx",         "Excel",
-                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        _dl_button(d[2], ws / "test_cases.jira.csv",     "Jira",      "text/csv")
-        _dl_button(d[3], ws / "test_cases.testrail.csv", "TestRail",  "text/csv")
-        _dl_button(d[4], ws / "test_cases.html",         "HTML",      "text/html")
-        _dl_button(d[5], ws / "test_cases.md",           "Markdown",  "text/markdown")
+                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "cases")
+        _dl_button(d[2], ws / "test_cases.jira.csv",     "Jira",      "text/csv", "cases")
+        _dl_button(d[3], ws / "test_cases.testrail.csv", "TestRail",  "text/csv", "cases")
+        _dl_button(d[4], ws / "test_cases.html",         "HTML",      "text/html", "cases")
+        _dl_button(d[5], ws / "test_cases.md",           "Markdown",  "text/markdown", "cases")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Stage 3 — Scope gate + automation
+# Stage ④ — Scope gate
 # ══════════════════════════════════════════════════════════════════════════════
 with st.container(border=True):
     st.subheader("④ Automation Scope")
@@ -345,10 +639,8 @@ with st.container(border=True):
         st.info("Generate test cases first.")
     else:
         cases = st.session_state.cases
-        automatable = [c for c in cases if c.get("automatable", True)]
 
-        # Preset cards
-        st.markdown("**Choose a preset:**")
+        st.markdown("**Choose what to automate:**")
         preset_cols = st.columns(len(PRESETS) + 1)
         preset_keys = list(PRESETS.keys()) + ["custom"]
 
@@ -356,23 +648,23 @@ with st.container(border=True):
             with col:
                 is_active = st.session_state.scope_selection == key
                 if key == "custom":
-                    count_label = "—"
-                    desc = "Pick filters below"
+                    count = "—"
+                    desc = "Pick filters"
                 else:
                     preset = {k: v for k, v in PRESETS[key].items() if k != "description"}
-                    count_label = f"{len(apply_scope(cases, preset))} cases"
+                    count = f"{len(apply_scope(cases, preset))}"
                     desc = PRESETS[key].get("description", "")
 
-                btn_label = f"{'✓ ' if is_active else ''}{key.title()}\n\n{count_label}"
+                btn_label = f"{'✓ ' if is_active else ''}{key.title()}\n\n{count} cases"
                 if st.button(btn_label, key=f"preset_{key}", use_container_width=True,
                              type="primary" if is_active else "secondary"):
                     st.session_state.scope_selection = key
                     st.rerun()
                 st.caption(desc)
 
-        # Custom filters
         if st.session_state.scope_selection == "custom":
             st.markdown("**Custom filters:**")
+            automatable = [c for c in cases if c.get("automatable", True)]
             all_prios = sorted({c.get("priority", "?") for c in automatable})
             all_types = sorted({c.get("type", "?") for c in automatable})
             all_tgts = sorted({c.get("target", "?") for c in automatable})
@@ -416,13 +708,13 @@ with st.container(border=True):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Stage 4 — Results & download
+# Stage ⑤ — Playwright suite + ZIP download
 # ══════════════════════════════════════════════════════════════════════════════
 with st.container(border=True):
     st.subheader("⑤ Playwright Suite")
 
     if not st.session_state.stage3_done:
-        st.info("Run Stage 3 to see generated files here.")
+        st.info("Run Stage ④ to generate Playwright tests.")
     else:
         ws = get_workspace()
         generated = sorted(
@@ -443,7 +735,6 @@ with st.container(border=True):
             for f in generated:
                 st.code(f, language="text")
 
-        # Preview any file
         ts_files = [f for f in generated if f.endswith((".ts", ".md", ".json"))]
         if ts_files:
             selected_file = st.selectbox("Preview file", ts_files)
@@ -453,7 +744,7 @@ with st.container(border=True):
                 lang = {"ts": "typescript", "md": "markdown", "json": "json"}.get(ext, "text")
                 st.code(content, language=lang, line_numbers=True)
 
-        # ZIP download
+        # ZIP download — everything
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for f in ws.rglob("*"):
@@ -464,7 +755,7 @@ with st.container(border=True):
         st.download_button(
             "⬇ Download full project (.zip)",
             data=zip_buf.getvalue(),
-            file_name="qa_agent_output.zip",
+            file_name="specwright_output.zip",
             mime="application/zip",
             use_container_width=True,
             type="primary",

@@ -17,7 +17,7 @@ class GroqProvider(LLMProvider):
     name = "groq"
     max_output_tokens = 8000  # Llama 3.x on Groq caps at 8192 output tokens
 
-    def __init__(self, model: str = "llama-3.3-70b-versatile",
+    def __init__(self, model: str = "llama-3.1-8b-instant",
                  api_key: str | None = None, temperature: float = 0.2):
         try:
             from groq import Groq

@@ -306,7 +306,7 @@ with st.sidebar:
     )
 
     MODEL_DEFAULTS = {
-        "groq": "llama-3.3-70b-versatile",
+        "groq": "llama-3.1-8b-instant",
         "gemini": "gemini-2.5-flash",
         "ollama": "llama3.1:8b",
         "anthropic": "claude-sonnet-4-6",

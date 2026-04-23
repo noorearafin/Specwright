@@ -33,7 +33,7 @@ def get_provider(cfg: dict) -> LLMProvider:
     if name == "groq":
         from .groq_provider import GroqProvider
         return GroqProvider(
-            model=cfg.get("model", "llama-3.3-70b-versatile"),
+            model=cfg.get("model", "llama-3.1-8b-instant"),
             api_key=cfg.get("api_key") or None,
             temperature=cfg.get("temperature", 0.2),
         )

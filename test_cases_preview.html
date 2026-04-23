@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Test Cases (24)</title>
+<style>
+  :root { --fg:#1a1a1a; --muted:#666; --bg:#fafafa; --card:#fff; --border:#e0e0e0; }
+  body { font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+          margin:0; padding:2rem; background:var(--bg); color:var(--fg); }
+  h1 { margin:0 0 1rem; }
+  .stats { display:flex; gap:2rem; flex-wrap:wrap; background:var(--card);
+            padding:1rem 1.5rem; border-radius:8px; border:1px solid var(--border); margin-bottom:1.5rem; }
+  .stat-block strong { display:block; color:var(--muted); font-size:.8rem; text-transform:uppercase; }
+  .stat-block span { margin-right:.75rem; }
+  .case { background:var(--card); border:1px solid var(--border); border-radius:6px;
+           margin-bottom:.5rem; padding:.5rem .75rem; }
+  .case summary { cursor:pointer; display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }
+  .case summary .id { font-family: monospace; font-weight:bold; min-width:70px; }
+  .case summary .title { flex:1; min-width:200px; }
+  .case summary .req { color:var(--muted); font-size:.85rem; }
+  .badge { display:inline-block; padding:.15rem .5rem; border-radius:3px; font-size:.75rem;
+            font-weight:600; text-transform:uppercase; letter-spacing:.5px; }
+  .badge.p0 { background:#E74C3C; color:#fff; }
+  .badge.p1 { background:#F39C12; color:#fff; }
+  .badge.p2 { background:#95A5A6; color:#fff; }
+  .badge.t-ui { background:#3498DB; color:#fff; }
+  .badge.t-api { background:#9B59B6; color:#fff; }
+  .badge.t-manual { background:#7F8C8D; color:#fff; }
+  .badge[class*="t-security"] { background:#C0392B; color:#fff; }
+  .badge[class*="t-accessibility"] { background:#16A085; color:#fff; }
+  .body { padding:.5rem 1rem; border-top:1px solid var(--border); margin-top:.5rem; }
+  .body h4 { margin:.5rem 0 .25rem; color:var(--muted); font-size:.85rem; text-transform:uppercase; }
+  code { background:#f0f0f0; padding:1px 5px; border-radius:3px; font-size:.85em; }
+</style></head><body>
+<h1>Test Cases <span style="color:var(--muted); font-weight:normal;">(24)</span></h1>
+<div class="stats">
+  <div class="stat-block"><strong>Priority</strong><span><b>P0</b>: 12</span><span><b>P1</b>: 10</span><span><b>P2</b>: 2</span></div>
+  <div class="stat-block"><strong>Type</strong><span><b>security</b>: 8</span><span><b>boundary</b>: 6</span><span><b>functional</b>: 5</span><span><b>accessibility</b>: 3</span><span><b>negative</b>: 1</span><span><b>performance</b>: 1</span></div>
+  <div class="stat-block"><strong>Target</strong><span><b>ui</b>: 15</span><span><b>api</b>: 7</span><span><b>manual</b>: 2</span></div>
+</div>
+
+        <details class="case">
+          <summary>
+            <span class="id">TC-001</span>
+            <span class="badge p0">P0</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-functional">functional</span>
+            <span class="title">Login succeeds with valid email and password</span>
+            <span class="req">REQ-1</span>
+          </summary>
+          <div class="body">
+            <h4>Preconditions</h4><ul><li>User active@test.com exists</li><li>App reachable at BASE_URL</li></ul>
+            <h4>Steps</h4>
+            <ol><li>Navigate to /login</li><li>Enter email <code>active@test.com</code></li><li>Enter password <code>ValidPass123!</code></li><li>Click Sign In</li></ol>
+            <h4>Expected</h4>
+            <p>Redirected to /dashboard within 2s; session cookie set (HttpOnly, Secure, SameSite=Lax); cookie expiry ~7 days from now</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-002</span>
+            <span class="badge p0">P0</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-negative">negative</span>
+            <span class="title">Login fails with correct email but wrong password</span>
+            <span class="req">REQ-1</span>
+          </summary>
+          <div class="body">
+            <h4>Preconditions</h4><ul><li>User active@test.com exists</li></ul>
+            <h4>Steps</h4>
+            <ol><li>Navigate to /login</li><li>Enter email <code>active@test.com</code></li><li>Enter password <code>WrongPass999</code></li><li>Click Sign In</li></ol>
+            <h4>Expected</h4>
+            <p>Error message &#x27;Invalid credentials&#x27; shown; no session cookie set; user stays on /login</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-003</span>
+            <span class="badge p0">P0</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-security">security</span>
+            <span class="title">Login fails with unregistered email — same message as wrong password (no enumeration)</span>
+            <span class="req">REQ-1</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>Navigate to /login</li><li>Enter email <code>ghost@nowhere.com</code></li><li>Enter password <code>anything123</code></li><li>Click Sign In</li></ol>
+            <h4>Expected</h4>
+            <p>Error text is EXACTLY &#x27;Invalid credentials&#x27; — identical to TC-002. No hint that email doesn&#x27;t exist.</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-004</span>
+            <span class="badge p0">P0</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-security">security</span>
+            <span class="title">Session cookie has correct security flags</span>
+            <span class="req">REQ-1</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>Perform successful login as active@test.com</li><li>Inspect cookies for domain</li></ol>
+            <h4>Expected</h4>
+            <p>session cookie present; HttpOnly=true; Secure=true; SameSite=Lax; expires ~7 days</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-005</span>
+            <span class="badge p1">P1</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-functional">functional</span>
+            <span class="title">Sign In button disabled when email field is empty</span>
+            <span class="req">REQ-2</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>Navigate to /login</li><li>Leave email blank, type password <code>ValidPass123!</code></li></ol>
+            <h4>Expected</h4>
+            <p>Sign In button is disabled</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-006</span>
+            <span class="badge p1">P1</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-functional">functional</span>
+            <span class="title">Sign In button disabled when password field is empty</span>
+            <span class="req">REQ-2</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>Navigate to /login</li><li>Type email, leave password blank <code>active@test.com</code></li></ol>
+            <h4>Expected</h4>
+            <p>Sign In button is disabled</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-007</span>
+            <span class="badge p1">P1</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-boundary">boundary</span>
+            <span class="title">Client-side email format validation rejects malformed addresses</span>
+            <span class="req">REQ-2</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>Navigate to /login</li><li>Enter invalid email <code>not-an-email</code></li><li>Tab out of field</li></ol>
+            <h4>Expected</h4>
+            <p>Inline validation error appears; form does not submit</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-008</span>
+            <span class="badge p1">P1</span>
+            <span class="badge t-api">api</span>
+            <span class="badge t-boundary">boundary</span>
+            <span class="title">Server rejects 300-character email (exceeds 254 max)</span>
+            <span class="req">REQ-2</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>POST /api/auth/login with 300-char email</li></ol>
+            <h4>Expected</h4>
+            <p>Response 400; error field indicates email length</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-009</span>
+            <span class="badge p0">P0</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-security">security</span>
+            <span class="title">Login rejects SQL injection in email field</span>
+            <span class="req">REQ-2</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>Navigate to /login</li><li>Enter email <code>admin&#x27; OR &#x27;1&#x27;=&#x27;1</code></li><li>Enter password <code>anything</code></li><li>Click Sign In</li></ol>
+            <h4>Expected</h4>
+            <p>Error &#x27;Invalid credentials&#x27;; no session cookie; server log shows no DB error</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-010</span>
+            <span class="badge p0">P0</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-security">security</span>
+            <span class="title">Login form escapes XSS payload in email field</span>
+            <span class="req">REQ-2</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>Navigate to /login</li><li>Enter email <code>&lt;script&gt;alert(1)&lt;/script&gt;@x.com</code></li><li>Click Sign In</li></ol>
+            <h4>Expected</h4>
+            <p>No alert dialog; any reflected text is escaped as literal characters</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-011</span>
+            <span class="badge p1">P1</span>
+            <span class="badge t-api">api</span>
+            <span class="badge t-boundary">boundary</span>
+            <span class="title">Password with exactly 8 chars is accepted</span>
+            <span class="req">REQ-2</span>
+          </summary>
+          <div class="body">
+            <h4>Preconditions</h4><ul><li>User with 8-char password exists</li></ul>
+            <h4>Steps</h4>
+            <ol><li>POST /api/auth/login with 8-char password</li></ol>
+            <h4>Expected</h4>
+            <p>200 OK; user object returned</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-012</span>
+            <span class="badge p1">P1</span>
+            <span class="badge t-api">api</span>
+            <span class="badge t-boundary">boundary</span>
+            <span class="title">Password with 129 chars is rejected</span>
+            <span class="req">REQ-2</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>POST /api/auth/login with 129-char password</li></ol>
+            <h4>Expected</h4>
+            <p>400 Bad Request</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-013</span>
+            <span class="badge p0">P0</span>
+            <span class="badge t-api">api</span>
+            <span class="badge t-boundary">boundary</span>
+            <span class="title">6th failed login within 60s returns 429 with Retry-After</span>
+            <span class="req">REQ-3</span>
+          </summary>
+          <div class="body">
+            <h4>Preconditions</h4><ul><li>User active@test.com exists</li></ul>
+            <h4>Steps</h4>
+            <ol><li>POST /api/auth/login with wrong password 5 times <code>active@test.com</code></li><li>POST /api/auth/login 6th time with wrong password</li></ol>
+            <h4>Expected</h4>
+            <p>Attempts 1-5 return 401; attempt 6 returns 429; Retry-After header present and numeric</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-014</span>
+            <span class="badge p0">P0</span>
+            <span class="badge t-api">api</span>
+            <span class="badge t-security">security</span>
+            <span class="title">Rate limit is per-email (different email from same IP not blocked)</span>
+            <span class="req">REQ-3</span>
+          </summary>
+          <div class="body">
+            <h4>Preconditions</h4><ul><li>Users a@test.com and b@test.com exist</li></ul>
+            <h4>Steps</h4>
+            <ol><li>Fail login 5x for a@test.com</li><li>Attempt valid login for b@test.com from same test</li></ol>
+            <h4>Expected</h4>
+            <p>b@test.com login returns 200, not 429 (limiter must be keyed by email)</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-015</span>
+            <span class="badge p1">P1</span>
+            <span class="badge t-api">api</span>
+            <span class="badge t-functional">functional</span>
+            <span class="title">Successful login resets the failed-attempt counter</span>
+            <span class="req">REQ-3</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>Fail login 4 times for active@test.com</li><li>Successfully log in</li><li>Fail login 3 more times</li></ol>
+            <h4>Expected</h4>
+            <p>No 429 triggered — counter reset after successful login</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-016</span>
+            <span class="badge p1">P1</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-functional">functional</span>
+            <span class="title">Forgot password link on /login navigates to /forgot-password</span>
+            <span class="req">REQ-4</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>Navigate to /login</li><li>Click &#x27;Forgot password?&#x27; link</li></ol>
+            <h4>Expected</h4>
+            <p>URL becomes /forgot-password; email input visible</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-017</span>
+            <span class="badge p0">P0</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-security">security</span>
+            <span class="title">Forgot-password response is identical for existing and non-existent email</span>
+            <span class="req">REQ-4</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>Submit forgot form for active@test.com; capture message + timing</li><li>Submit forgot form for ghost@nowhere.com; capture message + timing</li></ol>
+            <h4>Expected</h4>
+            <p>Both show &#x27;If the email exists, a reset link was sent.&#x27; Response time differs by &lt;100ms.</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-018</span>
+            <span class="badge p0">P0</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-security">security</span>
+            <span class="title">Reset token is single-use</span>
+            <span class="req">REQ-4</span>
+          </summary>
+          <div class="body">
+            <h4>Preconditions</h4><ul><li>Valid reset token obtained via test seam or mailbox API</li></ul>
+            <h4>Steps</h4>
+            <ol><li>Open /reset-password?token=&lt;valid&gt;</li><li>Submit new password <code>NewValidPass1!</code></li><li>Return to /reset-password?token=&lt;same&gt;</li><li>Attempt to submit another new password</li></ol>
+            <h4>Expected</h4>
+            <p>First submit succeeds; second attempt shows &#x27;This link has expired or been used&#x27;</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-019</span>
+            <span class="badge p0">P0</span>
+            <span class="badge t-api">api</span>
+            <span class="badge t-boundary">boundary</span>
+            <span class="title">Reset token older than 1 hour is rejected</span>
+            <span class="req">REQ-4</span>
+          </summary>
+          <div class="body">
+            <h4>Preconditions</h4><ul><li>Test seam to generate expired token</li></ul>
+            <h4>Steps</h4>
+            <ol><li>POST /api/auth/reset with token aged 61 minutes</li></ol>
+            <h4>Expected</h4>
+            <p>400 Bad Request; error code indicates expiration</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-020</span>
+            <span class="badge p0">P0</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-security">security</span>
+            <span class="title">Reset link rejects tampered/malformed tokens</span>
+            <span class="req">REQ-4</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>Open /reset-password?token=invalid</li><li>Submit new password <code>NewValidPass1!</code></li></ol>
+            <h4>Expected</h4>
+            <p>Error shown; password NOT changed for any user</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-021</span>
+            <span class="badge p2">P2</span>
+            <span class="badge t-manual">manual</span>
+            <span class="badge t-performance">performance</span>
+            <span class="title">Reset email arrives within 30 seconds (SLA)</span>
+            <span class="req">REQ-4</span>
+          </summary>
+          <div class="body">
+            <h4>Preconditions</h4><ul><li>Live email queue</li><li>Access to real inbox</li></ul>
+            <h4>Steps</h4>
+            <ol><li>Request reset for real email address</li><li>Time stamp arrival in inbox</li></ol>
+            <h4>Expected</h4>
+            <p>Email in inbox within 30s; verified manually as flaky in automation</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-022</span>
+            <span class="badge p1">P1</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-accessibility">accessibility</span>
+            <span class="title">All login form fields have accessible labels</span>
+            <span class="req">REQ-5</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>Navigate to /login</li><li>Run axe-core scan</li></ol>
+            <h4>Expected</h4>
+            <p>Zero violations for &#x27;label&#x27;, &#x27;aria-input-field-name&#x27;, &#x27;form-field-multiple-labels&#x27;</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-023</span>
+            <span class="badge p1">P1</span>
+            <span class="badge t-ui">ui</span>
+            <span class="badge t-accessibility">accessibility</span>
+            <span class="title">Keyboard-only login works (Tab + Enter)</span>
+            <span class="req">REQ-5</span>
+          </summary>
+          <div class="body">
+            
+            <h4>Steps</h4>
+            <ol><li>Navigate to /login</li><li>Press Tab to focus email; type</li><li>Tab to password; type</li><li>Press Enter</li></ol>
+            <h4>Expected</h4>
+            <p>Form submits; dashboard loads without touching mouse</p>
+          </div>
+        </details>
+        <details class="case">
+          <summary>
+            <span class="id">TC-024</span>
+            <span class="badge p2">P2</span>
+            <span class="badge t-manual">manual</span>
+            <span class="badge t-accessibility">accessibility</span>
+            <span class="title">Error messages announced via aria-live</span>
+            <span class="req">REQ-5</span>
+          </summary>
+          <div class="body">
+            <h4>Preconditions</h4><ul><li>Screen reader (NVDA or VoiceOver) available</li></ul>
+            <h4>Steps</h4>
+            <ol><li>Navigate to /login with screen reader on</li><li>Submit wrong password</li></ol>
+            <h4>Expected</h4>
+            <p>Screen reader announces &#x27;Invalid credentials&#x27; without requiring user to navigate to error</p>
+          </div>
+        </details>
+</body></html>

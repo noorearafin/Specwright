@@ -1,0 +1,11 @@
+# Core
+streamlit>=1.30.0
+pandas>=2.0.0
+pyyaml>=6.0
+openpyxl>=3.1.0
+
+# Pick ONE LLM provider (or install multiple to switch freely)
+google-genai>=0.1.0       # Gemini (free, recommended)
+# groq>=0.4.0             # Groq (free)
+# ollama>=0.3.0           # Ollama (local, free)
+# anthropic>=0.40.0       # Anthropic Claude (paid)

@@ -1,0 +1,45 @@
+# QA Agent config. Pick ONE llm block, comment out the others.
+
+# ── Gemini (Google, free tier: 15 req/min on 2.5 Flash) ─────────────────────
+# Install: pip install google-genai
+# Get key: https://aistudio.google.com/apikey
+llm:
+  provider: gemini
+  model: gemini-2.5-flash           # or gemini-2.5-pro for harder tasks
+  api_key: ${GEMINI_API_KEY}        # env var substitution
+  temperature: 0.2
+
+# ── Groq (free tier, fastest) ────────────────────────────────────────────────
+# Install: pip install groq
+# Get key: https://console.groq.com/keys
+# llm:
+#   provider: groq
+#   model: llama-3.3-70b-versatile    # or: qwen/qwen3-32b, deepseek-r1-distill-llama-70b
+#   api_key: ${GROQ_API_KEY}
+#   temperature: 0.2
+
+# ── Ollama (local, 100% free, no API key) ───────────────────────────────────
+# Install: pip install ollama
+# Setup:   https://ollama.com/download  →  ollama pull llama3.1:8b
+# llm:
+#   provider: ollama
+#   model: llama3.1:8b               # or qwen2.5-coder:7b for code-heavy Stage 3
+#   base_url: http://localhost:11434 # optional; this is the default
+#   temperature: 0.2
+
+# ── Anthropic (paid, highest quality) ────────────────────────────────────────
+# Install: pip install anthropic
+# llm:
+#   provider: anthropic
+#   model: claude-sonnet-4-6
+#   api_key: ${ANTHROPIC_API_KEY}
+#   temperature: 0.2
+
+# ── Export formats (after Stage 2) ──────────────────────────────────────────
+exports:
+  - csv            # flat CSV
+  - excel          # .xlsx with one row per case + summary sheet
+  - jira           # Jira CSV import (Xray-compatible columns)
+  - testrail       # TestRail CSV import format
+  - html           # self-contained human-readable report
+  - markdown       # MD table + detail sections

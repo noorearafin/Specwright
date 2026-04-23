@@ -39,12 +39,13 @@ class GroqProvider(LLMProvider):
                  temperature: float | None = None) -> str:
         """Send a (system, user) prompt pair to Groq and return the text response.
 
-        Retries up to 4 times on rate-limit (429) errors with linear back-off
-        (10s, 20s, 30s, 40s). Groq's free tier is generous but large JSON
-        generation calls in Stage 2 can occasionally hit limits.
+        Retries up to 5 times on rate-limit (429) errors. Groq's free tier resets
+        its token-per-minute window every 60 seconds, so each wait must be at least
+        65 seconds to guarantee the window has cleared before the next attempt.
+        Waits: 65s, 70s, 75s, 80s, 85s.
         """
         last_err = None
-        for attempt in range(4):
+        for attempt in range(5):
             try:
                 resp = self._client.chat.completions.create(
                     model=self.model,
@@ -59,9 +60,10 @@ class GroqProvider(LLMProvider):
             except Exception as e:  # noqa: BLE001
                 msg = str(e).lower()
                 if "rate" in msg or "429" in msg:
-                    # Back off linearly — Groq rate limits reset quickly (per minute)
-                    wait = 10 * (attempt + 1)
-                    print(f"  ⏳ rate-limited, sleeping {wait}s...")
+                    # Groq's per-minute window resets after 60s — wait at least
+                    # 65s to be safe, adding 5s per retry as a small buffer.
+                    wait = 65 + (attempt * 5)
+                    print(f"  ⏳ rate-limited (attempt {attempt + 1}/5), sleeping {wait}s...")
                     time.sleep(wait)
                     last_err = e
                     continue

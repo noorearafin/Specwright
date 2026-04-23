@@ -179,30 +179,45 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 # ══════════════════════════════════════════════════════════════════════════════
 # Session state
 # ══════════════════════════════════════════════════════════════════════════════
+# Streamlit reruns the entire script on every interaction.
+# session_state persists values across reruns — it's the only way to carry
+# data from one stage to the next within the same browser session.
 DEFAULTS = {
-    "prd_text": "",
-    "plan": None,
-    "cases": None,
-    "cases_original": None,     # track edits vs initial
-    "scope_selection": "regression",
-    "custom_priorities": [],
+    "prd_text": "",          # raw requirements text entered/uploaded by the user
+    "plan": None,            # test plan markdown returned by Stage 1
+    "cases": None,           # list of case dicts returned by Stage 2
+    "cases_original": None,  # snapshot of cases before inline edits (for change detection)
+    "scope_selection": "regression",   # which preset button is active in Stage 4
+    "custom_priorities": [],           # custom filter values (Stage 4 custom mode)
     "custom_types": [],
     "custom_targets": [],
-    "workspace": None,
-    "stage3_done": False,
-    "errors": [],               # list of {stage, short, detail, time}
+    "workspace": None,       # Path to the temp directory for all output files
+    "stage3_done": False,    # True once Stage 3 has generated Playwright files
+    "errors": [],            # list of {stage, short, detail, time} for the error banner
 }
+# setdefault — only initialises a key if it doesn't already exist, so reruns
+# don't wipe state that the user or a previous stage already set.
 for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
 
 
 def get_workspace() -> Path:
+    """Return the persistent temp directory for this session's output files.
+
+    Created once per session (on first call) and reused on every rerun.
+    All stage outputs (JSON, CSV, TS files, etc.) are written here.
+    """
     if st.session_state.workspace is None:
         st.session_state.workspace = Path(tempfile.mkdtemp(prefix="specwright_"))
     return st.session_state.workspace
 
 
 def reset_from(stage: int) -> None:
+    """Clear session state for all stages at or after `stage`.
+
+    Called whenever upstream data changes so stale downstream results don't
+    linger. E.g., re-uploading a PRD resets the plan and cases (stages 1+).
+    """
     if stage <= 1:
         st.session_state.plan = None
     if stage <= 2:
@@ -213,7 +228,11 @@ def reset_from(stage: int) -> None:
 
 
 def current_stage() -> int:
-    """Determine active step (1-5) based on what's done."""
+    """Determine the active pipeline step (1–5) based on what's completed.
+
+    The progress stepper at the top uses this to highlight the current step.
+    Returns the first incomplete step — once all stages are done it returns 5.
+    """
     if st.session_state.stage3_done:
         return 5
     if st.session_state.cases:
@@ -226,7 +245,11 @@ def current_stage() -> int:
 
 
 def log_error(stage: str, exc: Exception) -> None:
-    """Record an error for collapsed display."""
+    """Append an error to session state for display in the collapsible error banner.
+
+    Stores both a short one-liner (shown in the banner) and the full traceback
+    (shown in the expandable 'Details' tab).
+    """
     st.session_state.errors.append({
         "stage": stage,
         "short": f"{type(exc).__name__}: {str(exc)[:120]}",
@@ -236,7 +259,12 @@ def log_error(stage: str, exc: Exception) -> None:
 
 
 def _run_safe(stage_label: str, fn, *args, **kwargs):
-    """Run fn under a spinner. On error, log and return None — caller handles UI."""
+    """Run fn() under a spinner. On error, log to the error banner and return None.
+
+    Returning None instead of raising lets the caller decide how to update the UI
+    (e.g., show a warning) rather than crashing the entire Streamlit app.
+    SystemExit is caught separately because get_provider() uses it for missing API keys.
+    """
     try:
         with st.spinner(stage_label):
             return fn(*args, **kwargs)
@@ -248,6 +276,11 @@ def _run_safe(stage_label: str, fn, *args, **kwargs):
 
 
 def _dl_button(col, path: Path, label: str, mime: str, key_suffix: str = "") -> None:
+    """Render a download button for a file if it exists on disk.
+
+    key_suffix makes the Streamlit widget key unique when the same file name
+    appears in multiple download rows (e.g., plan row vs cases row).
+    """
     if path.exists():
         col.download_button(
             f"⬇ {label}",
@@ -586,13 +619,17 @@ with st.container(border=True):
             key="case_editor",
         )
 
-        # Detect changes and re-save/re-export
+        # ── Detect changes and re-save/re-export ─────────────────────────────
+        # The data_editor returns a new DataFrame on every rerun. We convert it
+        # back to case dicts, merging with the original to preserve fields like
+        # 'steps' and 'preconditions' that aren't shown in the table columns.
         edited_cases = []
         for i, row in edited_df.iterrows():
-            # Preserve original fields we don't expose in the editor
+            # Look up the original case by ID to preserve unexposed fields
+            # (steps, preconditions, page) that the editor doesn't show.
             original = next((c for c in cases if c.get("id") == row["ID"]), {})
             edited_cases.append({
-                **original,
+                **original,         # keep steps/preconditions/etc. from original
                 "id": row["ID"],
                 "requirement_id": row["REQ"],
                 "title": row["Title"],
@@ -604,6 +641,8 @@ with st.container(border=True):
                 "automatable": bool(row["Automatable"]),
             })
 
+        # Only re-export when data actually changed — avoids redundant I/O on
+        # every rerun that doesn't involve an edit.
         if edited_cases != cases:
             st.session_state.cases = edited_cases
             ws = get_workspace()
@@ -744,13 +783,17 @@ with st.container(border=True):
                 lang = {"ts": "typescript", "md": "markdown", "json": "json"}.get(ext, "text")
                 st.code(content, language=lang, line_numbers=True)
 
-        # ZIP download — everything
+        # ── Build an in-memory ZIP of the entire workspace ───────────────────
+        # We include everything — TypeScript files, JSON, exports — so the user
+        # gets a ready-to-use Playwright project they can unzip and run immediately.
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for f in ws.rglob("*"):
                 if f.is_file():
+                    # Store paths relative to workspace root so the ZIP structure
+                    # mirrors the project layout (tests/pages/LoginPage.ts, etc.)
                     zf.write(f, f.relative_to(ws))
-        zip_buf.seek(0)
+        zip_buf.seek(0)  # rewind so the download button can read from the start
 
         st.download_button(
             "⬇ Download full project (.zip)",

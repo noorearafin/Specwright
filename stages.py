@@ -14,8 +14,10 @@ from prompts import (
     POM_SYSTEM, UI_SPEC_SYSTEM, API_SPEC_SYSTEM,
 )
 
-# Rough budget per test case in tokens (JSON object with steps).
-# Used to decide chunking: if total_cases × this > provider max, split per-REQ.
+# Rough token budget per test case (JSON object with steps, preconditions, etc.).
+# Stage 2 multiplies this by the estimated case count to decide whether to generate
+# all cases in a single LLM call or split into per-requirement chunks.
+# Underestimating risks JSON truncation; overestimating wastes the token budget.
 TOKENS_PER_CASE = 500
 
 
@@ -23,12 +25,18 @@ TOKENS_PER_CASE = 500
 # Stage 1 — Test Plan
 # ──────────────────────────────────────────────────────────────────────────────
 def stage1_plan(llm, requirements: str, out_dir: Path) -> str:
+    """Generate an IEEE 829 test plan from the requirements document.
+
+    Single LLM call — the plan is short enough that chunking is never needed.
+    Writes test_plan.md to out_dir and returns the markdown string.
+    """
     print("▶ Stage 1: Writing test plan...")
     plan = llm.complete(
         system=PLANNER_SYSTEM,
         user=f"<requirements>\n{requirements}\n</requirements>\n\nWrite the test plan.",
         max_tokens=8000,
     )
+    # Write to disk immediately so --skip-stage 1 can reload it on the next run
     (out_dir / "test_plan.md").write_text(plan)
     print(f"  ✓ test_plan.md written ({len(plan)} chars)\n")
     return plan
@@ -38,9 +46,23 @@ def stage1_plan(llm, requirements: str, out_dir: Path) -> str:
 # Stage 2 — Test Cases (two-pass: estimate → generate, chunked if needed)
 # ──────────────────────────────────────────────────────────────────────────────
 def stage2_cases(llm, requirements: str, plan: str, out_dir: Path) -> list[dict]:
+    """Generate detailed test cases in two passes.
+
+    Pass 1 (Estimator): Ask the LLM how many cases each requirement needs.
+      This is a small, fast call that returns a JSON count map.
+
+    Pass 2 (Case Writer): Generate the actual cases. If the total estimated
+      token budget fits within the provider's output cap, one call handles
+      everything. If not, we loop per-requirement (chunking) to avoid silent
+      truncation that would break JSON parsing.
+
+    Writes test_cases.json to out_dir and returns the list of case dicts.
+    """
     print("▶ Stage 2: Writing test cases...")
 
-    # Pass 1 — Estimator: LLM decides how many cases per requirement
+    # ── Pass 1: Estimator ─────────────────────────────────────────────────────
+    # Ask the LLM to plan coverage before writing cases. This small call tells
+    # us how many cases each requirement needs, which drives the chunking decision.
     print("  • Pass 1/2: Estimating coverage...")
     estimate = llm.complete_json(
         system=ESTIMATOR_SYSTEM,
@@ -61,12 +83,15 @@ def stage2_cases(llm, requirements: str, plan: str, out_dir: Path) -> list[dict]
     if estimate.get("reasoning"):
         print(f"  • Reasoning: {estimate['reasoning'][:200]}")
 
-    # Pass 2 — Decide: single call or chunked?
+    # ── Pass 2: Case Writer ───────────────────────────────────────────────────
+    # Decision: can we fit all cases in one LLM call, or do we need to chunk?
+    # TOKENS_PER_CASE is a conservative per-case estimate; budget = total overhead.
     budget = total * TOKENS_PER_CASE
     cap = llm.max_output_tokens
     all_cases: list[dict] = []
 
     if budget <= cap:
+        # Single call — simpler, fewer rate-limit hits, consistent TC numbering
         print(f"  • Pass 2/2: Generating all {total} cases in one call "
               f"(budget {budget} ≤ provider cap {cap})...")
         batch = llm.complete_json(
@@ -76,12 +101,16 @@ def stage2_cases(llm, requirements: str, plan: str, out_dir: Path) -> list[dict]
         )
         all_cases = _normalize_cases(batch)
     else:
+        # Chunked: generate one requirement at a time to avoid truncated JSON.
+        # We continue past individual failures so a bad requirement doesn't
+        # abort the whole run.
         print(f"  • Pass 2/2: Chunking per-requirement "
               f"(total budget {budget} > provider cap {cap})...")
         next_id = 1
         for i, (req_id, count) in enumerate(per_req.items(), 1):
             print(f"    [{i}/{len(per_req)}] Generating {count} cases for {req_id}...")
-            req_budget = count * TOKENS_PER_CASE + 500  # padding for JSON overhead
+            # Add 500-token overhead for JSON structure / wrapper text
+            req_budget = count * TOKENS_PER_CASE + 500
             chunk_max = min(req_budget, cap)
             try:
                 batch = llm.complete_json(
@@ -98,14 +127,17 @@ def stage2_cases(llm, requirements: str, plan: str, out_dir: Path) -> list[dict]
             except Exception as e:  # noqa: BLE001
                 print(f"       ⚠ {req_id} failed: {e} — continuing")
 
-            # Pause between calls (sequential-safe for free tiers)
+            # 1-second pause between chunked calls — keeps us under free-tier
+            # rate limits (Gemini: 15 req/min, Groq: generous but not unlimited)
             if i < len(per_req):
                 time.sleep(1)
 
-    # Renumber TC-IDs globally so they're unique regardless of chunking
+    # Renumber all TC-IDs sequentially (TC-001, TC-002, …) after chunking,
+    # because each chunk starts from 1 and would otherwise produce duplicates.
     for idx, case in enumerate(all_cases, 1):
         case["id"] = f"TC-{idx:03d}"
 
+    # Persist to disk so --skip-stage 2 can reload without re-running the LLM
     (out_dir / "test_cases.json").write_text(json.dumps(all_cases, indent=2))
 
     by_target = defaultdict(int)
@@ -139,9 +171,14 @@ def _case_user_message(requirements: str, plan: str, per_req: dict,
 
 
 def _normalize_cases(batch, start_id: int = 1) -> list[dict]:
-    """Accept either a bare list or an object wrapping one. Normalize to a list."""
+    """Accept either a bare list or an object wrapping one. Normalize to a list.
+
+    Some LLMs ignore the "return a JSON array" instruction and wrap the list
+    inside an object key instead — e.g., {"test_cases": [...]}. This function
+    handles both shapes so callers always get a plain list back.
+    """
     if isinstance(batch, dict):
-        # Some models wrap: {"test_cases": [...]} or {"cases": [...]}
+        # Try common wrapper keys that models use when they ignore instructions
         for key in ("test_cases", "cases", "items", "data"):
             if key in batch and isinstance(batch[key], list):
                 batch = batch[key]
@@ -157,28 +194,46 @@ def _normalize_cases(batch, start_id: int = 1) -> list[dict]:
 # Stage 3 — Automation (deterministic orchestration + LLM code gen per file)
 # ──────────────────────────────────────────────────────────────────────────────
 def stage3_automate(llm, cases: list[dict], project_root: Path) -> None:
+    """Generate a Playwright TypeScript project from the filtered test cases.
+
+    Orchestration (pure Python, no LLM):
+      - Detect whether the project is new (missing playwright.config.ts).
+      - If new, scaffold package.json, tsconfig.json, playwright.config.ts, .env.example.
+
+    Code generation (one LLM call per output file):
+      - For UI cases: one Page Object class per unique page + one spec file per requirement.
+      - For API cases: one spec file per requirement using Playwright's request fixture.
+
+    Already-existing files are skipped so re-runs don't overwrite manual edits.
+    """
     print("▶ Stage 3: Generating Playwright tests...")
 
-    # 1. Project detection + scaffold (pure Python, no LLM)
+    # ── Step 1: Scaffold if this is a brand-new project ──────────────────────
+    # We detect "new project" by checking for playwright.config.ts. If it
+    # already exists, we skip scaffolding and just add files alongside it.
     is_new = not (project_root / "playwright.config.ts").exists()
     if is_new:
         print("  • New project — scaffolding Playwright config...")
         _scaffold(project_root)
 
-    # 2. Split by target
+    # ── Step 2: Route cases by target ────────────────────────────────────────
+    # UI cases need a browser (Page Object + spec); API cases use HTTP only.
     ui_cases = [c for c in cases if c.get("target") == "ui"]
     api_cases = [c for c in cases if c.get("target") == "api"]
     print(f"  • UI cases: {len(ui_cases)}, API cases: {len(api_cases)}")
 
     files_written: list[str] = []
 
-    # 3. For UI: figure out page objects, generate each
+    # ── Step 3: Generate Page Object Models for UI cases ─────────────────────
+    # Cases are grouped by their 'page' field (e.g., LoginPage, DashboardPage).
+    # One POM class is generated per page so specs can import and reuse it.
     if ui_cases:
         pages = _group_pages(ui_cases)  # {"LoginPage": [cases...], ...}
         print(f"  • Page objects needed: {list(pages.keys())}")
 
         for page_name, page_cases in pages.items():
             path = project_root / "tests" / "pages" / f"{page_name}.ts"
+            # Skip if the file already exists — preserves any manual changes
             if path.exists():
                 print(f"    ↳ skip (exists): tests/pages/{page_name}.ts")
                 continue
@@ -192,7 +247,9 @@ def stage3_automate(llm, cases: list[dict], project_root: Path) -> None:
             files_written.append(f"tests/pages/{page_name}.ts")
             print(f"    ✓ tests/pages/{page_name}.ts")
 
-        # 4. UI spec files grouped by requirement
+        # ── Step 4: Generate UI spec files (one per requirement) ──────────────
+        # Grouping by requirement_id keeps related tests together in a single
+        # describe block and makes the spec file easy to map back to the PRD.
         by_req = _group_by(ui_cases, "requirement_id")
         for req_id, group in by_req.items():
             fname = _slug(req_id) + ".spec.ts"
@@ -210,7 +267,9 @@ def stage3_automate(llm, cases: list[dict], project_root: Path) -> None:
             files_written.append(f"tests/specs/{fname}")
             print(f"    ✓ tests/specs/{fname}")
 
-    # 5. API spec files grouped by requirement
+    # ── Step 5: Generate API spec files (one per requirement) ─────────────────
+    # API tests live in tests/api/ and use Playwright's `request` fixture —
+    # no browser is launched, making them fast and CI-friendly.
     if api_cases:
         by_req = _group_by(api_cases, "requirement_id")
         for req_id, group in by_req.items():
@@ -229,7 +288,7 @@ def stage3_automate(llm, cases: list[dict], project_root: Path) -> None:
             files_written.append(f"tests/api/{fname}")
             print(f"    ✓ tests/api/{fname}")
 
-    # 6. Report
+    # ── Step 6: Write AUTOMATION_REPORT.md ────────────────────────────────────
     _write_report(project_root, cases, files_written)
     print(f"\n  ✓ {len(files_written)} files written. See AUTOMATION_REPORT.md")
 
@@ -238,7 +297,11 @@ def stage3_automate(llm, cases: list[dict], project_root: Path) -> None:
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 def _group_pages(ui_cases: list[dict]) -> dict[str, list[dict]]:
-    """Group UI cases by their `page` field. Infer from requirement_id if missing."""
+    """Group UI cases by their `page` field. Infer from requirement_id if missing.
+
+    If a case has no 'page' field (shouldn't happen, but LLMs occasionally omit it),
+    we derive a page name from the requirement_id so the case still gets a POM.
+    """
     out: dict[str, list[dict]] = defaultdict(list)
     for c in ui_cases:
         name = c.get("page") or f"Req{c.get('requirement_id', 'Unknown').replace('REQ-', '')}Page"
@@ -247,6 +310,7 @@ def _group_pages(ui_cases: list[dict]) -> dict[str, list[dict]]:
 
 
 def _group_by(cases: list[dict], key: str) -> dict[str, list[dict]]:
+    """Generic grouping helper — returns {value: [cases]} for any case field."""
     out: dict[str, list[dict]] = defaultdict(list)
     for c in cases:
         out[c.get(key, "UNGROUPED")].append(c)
@@ -254,11 +318,17 @@ def _group_by(cases: list[dict], key: str) -> dict[str, list[dict]]:
 
 
 def _slug(s: str) -> str:
+    """Convert a string (e.g., 'REQ-1') to a safe kebab-case filename segment."""
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
 
 
 def _clean_code(code: str) -> str:
-    """Strip accidental markdown fences from LLM output."""
+    """Strip accidental markdown fences from LLM output.
+
+    Despite the prompt saying 'no markdown fences', some models still wrap
+    code in ```typescript ... ``` blocks. We strip them here so the file
+    contains only valid TypeScript.
+    """
     code = code.strip()
     fence = re.match(r"^```(?:typescript|ts)?\s*\n(.*?)\n```\s*$", code, re.DOTALL)
     if fence:

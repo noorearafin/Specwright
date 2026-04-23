@@ -41,13 +41,20 @@ class GeminiProvider(LLMProvider):
 
     def complete(self, system: str, user: str, max_tokens: int = 8000,
                  temperature: float | None = None) -> str:
+        """Send a (system, user) prompt pair to Gemini and return the text response.
+
+        Retries up to 4 times on rate-limit errors with exponential back-off
+        (15s, 30s, 45s, 60s). The free tier allows ~15 requests/min, so Stage 2's
+        1-second inter-chunk sleep is usually enough, but burst calls can still
+        hit the limit.
+        """
         cfg = self._types.GenerateContentConfig(
             system_instruction=system,
             max_output_tokens=max_tokens,
             temperature=temperature if temperature is not None else self.default_temperature,
         )
 
-        # Retry on rate limits (free tier: 15 req/min)
+        # Retry on rate limits — Gemini free tier: 15 req/min
         last_err = None
         for attempt in range(4):
             try:
@@ -58,10 +65,11 @@ class GeminiProvider(LLMProvider):
             except Exception as e:  # noqa: BLE001
                 msg = str(e).lower()
                 if "rate" in msg or "quota" in msg or "429" in msg:
+                    # Increase wait time with each retry to give the quota time to reset
                     wait = 15 * (attempt + 1)
                     print(f"  ⏳ rate-limited, sleeping {wait}s...")
                     time.sleep(wait)
                     last_err = e
                     continue
-                raise
+                raise  # non-rate-limit errors bubble up immediately
         raise RuntimeError(f"Gemini failed after retries: {last_err}")

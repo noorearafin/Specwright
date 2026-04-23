@@ -30,7 +30,8 @@ class OllamaProvider(LLMProvider):
         self.model = model
         self.default_temperature = temperature
 
-        # Fail fast if the model isn't pulled
+        # Fail fast if the model isn't pulled locally — gives a clear action message
+        # rather than a cryptic API error mid-pipeline when Stage 2 first calls complete().
         try:
             self._client.show(model)
         except Exception:
@@ -42,6 +43,12 @@ class OllamaProvider(LLMProvider):
 
     def complete(self, system: str, user: str, max_tokens: int = 8000,
                  temperature: float | None = None) -> str:
+        """Send a (system, user) prompt pair to the local Ollama server.
+
+        num_predict maps to Ollama's token limit. No retry logic here — Ollama
+        runs locally and doesn't have rate limits. Network errors mean the server
+        is down, which needs fixing rather than retrying.
+        """
         resp = self._client.chat(
             model=self.model,
             messages=[

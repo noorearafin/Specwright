@@ -17,12 +17,6 @@ from pathlib import Path
 
 
 def run_exports(cases: list[dict], out_dir: Path, formats: list[str]) -> None:
-    """Dispatch test cases to each requested export format.
-
-    Called after Stage 2 and again on every inline edit in the Streamlit UI.
-    Unknown format names are warned and skipped so a typo doesn't abort everything.
-    """
-    # Map format names (from config / UI) to their export functions
     handlers = {
         "csv": export_csv,
         "excel": export_excel,
@@ -211,12 +205,6 @@ def export_jira(cases: list[dict], out_dir: Path) -> Path:
 
 
 def _build_jira_description(c: dict) -> str:
-    """Format a test case as Jira wiki markup for the Description field.
-
-    Uses Jira's *bold* and # ordered-list syntax so the imported ticket
-    renders nicely in the Jira UI. This is the format Xray expects when
-    importing Test issues via CSV.
-    """
     lines = [
         f"*Requirement:* {c.get('requirement_id', 'n/a')}",
         f"*Type:* {c.get('type', 'n/a')}  |  *Target:* {c.get('target', 'n/a')}",
@@ -229,7 +217,6 @@ def _build_jira_description(c: dict) -> str:
         lines.append("")
     lines.append("*Steps:*")
     for i, s in enumerate(c.get("steps", []), 1):
-        # Jira wiki uses # for numbered list items
         line = f"# {s.get('action', '')}"
         if s.get("data"):
             line += f" (data: {s['data']})"
@@ -579,19 +566,7 @@ def export_plan_docx(plan_md: str, out_dir: Path) -> Path:
 
 # ─── Markdown → block parsing helpers (minimal, no full-MD parser needed) ────
 def _parse_md_blocks(md: str) -> list[tuple[str, str]]:
-    """Convert a markdown string into a list of (kind, text) block tuples.
-
-    A minimal, dependency-free parser — we only need to handle the structures
-    our test plan prompts produce (headings h1-h3, tables, bullet lists,
-    paragraphs). Does not handle code fences, blockquotes, or nested lists.
-
-    Returns a list of (kind, text) where kind is one of:
-      'h1', 'h2', 'h3' — heading levels
-      'table'          — full markdown table block (header + separator + rows)
-      'list'           — consecutive bullet lines joined with \n
-      'p'              — paragraph (consecutive non-special lines joined with space)
-      'blank'          — empty line (used as a spacer by PDF/DOCX builders)
-    """
+    """Very lightweight MD → (kind, text) blocks. Good enough for our test plans."""
     blocks = []
     lines = md.splitlines()
     i = 0
@@ -614,9 +589,9 @@ def _parse_md_blocks(md: str) -> list[tuple[str, str]]:
             blocks.append(("h3", stripped[4:].strip()))
             i += 1
         elif "|" in stripped and i + 1 < len(lines) and "---" in lines[i + 1]:
-            # Markdown table: collect header + separator + all following pipe rows
+            # Markdown table
             tbl = [stripped]
-            i += 1  # advance to separator row
+            i += 1  # header separator
             tbl.append(lines[i])
             i += 1
             while i < len(lines) and "|" in lines[i]:
@@ -624,7 +599,6 @@ def _parse_md_blocks(md: str) -> list[tuple[str, str]]:
                 i += 1
             blocks.append(("table", "\n".join(tbl)))
         elif stripped.startswith(("- ", "* ")):
-            # Bullet list: collect consecutive lines starting with - or *
             items = [stripped]
             i += 1
             while i < len(lines) and lines[i].startswith(("- ", "* ")):
@@ -632,7 +606,7 @@ def _parse_md_blocks(md: str) -> list[tuple[str, str]]:
                 i += 1
             blocks.append(("list", "\n".join(items)))
         else:
-            # Paragraph: gather consecutive non-blank, non-heading, non-list lines
+            # Paragraph (gather consecutive non-blank, non-header lines)
             para = [stripped]
             i += 1
             while i < len(lines) and lines[i].strip() and not lines[i].startswith(

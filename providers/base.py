@@ -12,65 +12,46 @@ from abc import ABC, abstractmethod
 
 
 class LLMProvider(ABC):
-    """Abstract base class — every LLM provider just implements complete().
-
-    The interface is intentionally minimal: system prompt + user message → text.
-    All pipeline stages call complete() or complete_json(); they never talk to a
-    specific provider SDK directly. Swapping providers requires only changing the
-    config — no stage code changes.
-    """
+    """Abstract base — every provider just implements complete()."""
 
     name: str = "base"
 
     # Maximum output tokens this provider/model will reliably produce in a
     # single call. Subclasses override this. Stage 2 uses it to decide whether
-    # to chunk generation per-requirement (avoid silent truncation → broken JSON).
+    # to chunk generation per-requirement.
     max_output_tokens: int = 8000
 
     @abstractmethod
     def complete(self, system: str, user: str, max_tokens: int = 8000,
                  temperature: float = 0.2) -> str:
-        """Return the LLM's text response to a (system, user) message pair."""
+        """Return the LLM's text response to (system, user) message pair."""
 
     def complete_json(self, system: str, user: str, max_tokens: int = 16000,
                       temperature: float = 0.1):
-        """Call complete() and parse the response as JSON.
-
-        Uses a lower temperature (0.1) by default — JSON generation benefits from
-        more deterministic output than prose writing (0.2).
-
-        Clamps max_tokens to the provider's real ceiling so we never request more
-        than the model can return; silent truncation would break JSON parsing.
-        """
+        """Call complete() and parse JSON. Strips markdown fences if present."""
+        # Clamp to the provider's real capacity so we never ask for more than
+        # it can return (silent truncation → JSON parse errors).
         safe_max = min(max_tokens, self.max_output_tokens)
         raw = self.complete(system, user, max_tokens=safe_max, temperature=temperature)
         return _parse_json(raw)
 
 
 def _parse_json(raw: str):
-    """Extract JSON from LLM output — handles ```json fences and stray prose.
-
-    Three-step strategy:
-      1. Strip ```json ... ``` fences if present.
-      2. Try json.loads on the clean string.
-      3. Fall back to bracket-scanning — find the first [ or { and last ] or }
-         and try parsing just that slice. Handles models that add an explanation
-         sentence before or after the JSON object.
-    """
+    """Extract JSON from LLM output — handles ```json fences and stray prose."""
     raw = raw.strip()
 
-    # Step 1: strip markdown code fences that some models add despite instructions
+    # Strip markdown fences
     fence = re.match(r"^```(?:json)?\s*\n(.*?)\n```\s*$", raw, re.DOTALL)
     if fence:
         raw = fence.group(1).strip()
 
-    # Step 2: direct parse — the happy path for well-behaved models
+    # Try direct parse first
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
         pass
 
-    # Step 3: bracket scan — rescue partial JSON when the model adds stray text
+    # Fallback: find first [ or { and last matching bracket
     for open_ch, close_ch in (("[", "]"), ("{", "}")):
         start = raw.find(open_ch)
         end = raw.rfind(close_ch)

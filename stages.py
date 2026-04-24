@@ -91,12 +91,13 @@ def stage2_cases(llm, requirements: str, plan: str, out_dir: Path) -> list[dict]
 
     total = sum(per_req.values())
 
-    # Safety clamp: if the LLM ignored the budget constraint, enforce it here
+    # Dynamic budget enforcement: if the LLM returned more cases than the
+    # provider can generate, reduce counts precisely to fit the token budget.
     if total > max_total_cases:
-        scale = max_total_cases / total
-        per_req = {k: max(1, round(v * scale)) for k, v in per_req.items()}
+        per_req = _fit_to_budget(per_req, max_total_cases)
         total = sum(per_req.values())
-        print(f"  ⚠ Estimator exceeded budget — scaled down to {total} cases")
+        print(f"  • Token budget: adjusted to {total} cases "
+              f"(provider cap: {max_total_cases})")
 
     print(f"  ✓ LLM plans {total} cases across {len(per_req)} requirements: "
           f"{dict(per_req)}")
@@ -165,6 +166,33 @@ def stage2_cases(llm, requirements: str, plan: str, out_dir: Path) -> list[dict]
         by_target[c.get("target", "?")] += 1
     print(f"  ✓ {len(all_cases)} cases written. By target: {dict(by_target)}\n")
     return all_cases
+
+
+def _fit_to_budget(per_req: dict, budget: int) -> dict:
+    """Reduce per-requirement case counts to fit exactly within the token budget.
+
+    Uses floor-division so every requirement keeps a proportional share, then
+    distributes the leftover slots (from rounding) to the most complex requirements
+    first. This guarantees sum(result.values()) == budget exactly, and no
+    requirement ever drops below 1.
+    """
+    keys = list(per_req.keys())
+    total = sum(per_req.values())
+    scale = budget / total
+
+    # Floor every count — this will sum to <= budget
+    reduced = {k: max(1, int(per_req[k] * scale)) for k in keys}
+
+    # Give leftover slots (budget - current_sum) to the requirements with the
+    # highest original counts — they're most complex and benefit most.
+    leftover = budget - sum(reduced.values())
+    for k in sorted(keys, key=lambda k: per_req[k], reverse=True):
+        if leftover <= 0:
+            break
+        reduced[k] += 1
+        leftover -= 1
+
+    return reduced
 
 
 def _case_user_message(requirements: str, plan: str, per_req: dict,

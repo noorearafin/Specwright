@@ -38,14 +38,68 @@ st.set_page_config(
 # ── Custom CSS ────────────────────────────────────────────────────────────────
 CUSTOM_CSS = """
 <style>
-  /* Hero header with gradient accent */
+  /* ═══════════════════ Keyframes ═══════════════════ */
+  @keyframes sw-gradient-shift {
+    0%   { background-position: 0% 50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+  @keyframes sw-fade-in-up {
+    from { opacity: 0; transform: translateY(14px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes sw-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  @keyframes sw-pulse-glow {
+    0%, 100% { box-shadow: 0 2px 8px rgba(124, 58, 237, 0.18); }
+    50%      { box-shadow: 0 3px 12px rgba(124, 58, 237, 0.30); }
+  }
+  @keyframes sw-shine {
+    0%   { transform: translateX(-120%) skewX(-20deg); }
+    60%, 100% { transform: translateX(220%) skewX(-20deg); }
+  }
+  @keyframes sw-pop {
+    0%   { transform: scale(0.7); opacity: 0; }
+    70%  { transform: scale(1.08); }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  @keyframes sw-shake {
+    0%, 100% { transform: translateX(0); }
+    20%      { transform: translateX(-6px); }
+    40%      { transform: translateX(5px); }
+    60%      { transform: translateX(-3px); }
+    80%      { transform: translateX(2px); }
+  }
+  @keyframes sw-check-pop {
+    0%   { transform: scale(0); }
+    60%  { transform: scale(1.25); }
+    100% { transform: scale(1); }
+  }
+
+  /* Hero header with animated gradient accent + shine sweep */
   .sw-hero {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #6d5bd0 100%);
+    background-size: 200% 200%;
+    animation: sw-gradient-shift 12s ease infinite, sw-fade-in-up 0.6s ease both;
     color: white;
     padding: 1.5rem 1.75rem;
     border-radius: 14px;
     margin-bottom: 1.25rem;
     box-shadow: 0 4px 20px rgba(102, 126, 234, 0.25);
+  }
+  /* Diagonal light sweep across the hero — subtle, slow, with a long pause */
+  .sw-hero::after {
+    content: "";
+    position: absolute;
+    top: 0; left: 0;
+    width: 40%; height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.10), transparent);
+    animation: sw-shine 11s ease-in-out infinite;
+    pointer-events: none;
   }
   .sw-hero h1 {
     color: white !important;
@@ -78,8 +132,20 @@ CUSTOM_CSS = """
     font-size: 0.82rem;
     color: #6b7280;
     font-weight: 500;
-    transition: all 0.2s;
+    transition: transform 0.2s ease, box-shadow 0.2s ease,
+                background 0.3s ease, border-color 0.3s ease, color 0.3s ease;
     position: relative;
+    animation: sw-fade-in-up 0.5s ease both;
+  }
+  /* Stagger the steps as they fade in */
+  .sw-step:nth-child(1) { animation-delay: 0.05s; }
+  .sw-step:nth-child(2) { animation-delay: 0.12s; }
+  .sw-step:nth-child(3) { animation-delay: 0.19s; }
+  .sw-step:nth-child(4) { animation-delay: 0.26s; }
+  .sw-step:nth-child(5) { animation-delay: 0.33s; }
+  .sw-step:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
   }
   .sw-step.done {
     background: #d1fae5;
@@ -90,8 +156,8 @@ CUSTOM_CSS = """
     background: #ede9fe;
     border-color: #7c3aed;
     color: #5b21b6;
-    box-shadow: 0 2px 8px rgba(124, 58, 237, 0.2);
     font-weight: 600;
+    animation: sw-fade-in-up 0.5s ease both, sw-pulse-glow 3.2s ease-in-out infinite 0.5s;
   }
   .sw-step-num {
     display: inline-block;
@@ -105,13 +171,23 @@ CUSTOM_CSS = """
     text-align: center;
     margin-right: 0.3rem;
     font-weight: 700;
+    transition: background 0.3s ease, transform 0.3s ease;
   }
-  .sw-step.done .sw-step-num { background: #10b981; color: white; }
+  .sw-step.done .sw-step-num {
+    background: #10b981;
+    color: white;
+    animation: sw-check-pop 0.4s ease both;
+  }
   .sw-step.active .sw-step-num { background: #7c3aed; color: white; }
 
-  /* Section cards - softer than default borders */
+  /* Section cards - softer borders + gentle entrance + hover lift */
   [data-testid="stVerticalBlock"] > [style*="border"] {
     border-radius: 12px !important;
+    animation: sw-fade-in-up 0.5s ease both;
+    transition: box-shadow 0.25s ease, transform 0.25s ease;
+  }
+  [data-testid="stVerticalBlock"] > [style*="border"]:hover {
+    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.06);
   }
 
   /* Priority badges in data_editor */
@@ -121,12 +197,14 @@ CUSTOM_CSS = """
     border-radius: 10px;
     font-size: 0.75rem;
     font-weight: 600;
+    transition: transform 0.15s ease;
   }
+  .sw-badge:hover { transform: scale(1.08); }
   .sw-badge-p0 { background: #fee2e2; color: #991b1b; }
   .sw-badge-p1 { background: #fef3c7; color: #92400e; }
   .sw-badge-p2 { background: #f3f4f6; color: #374151; }
 
-  /* Error banner */
+  /* Error banner — shakes in to draw attention */
   .sw-error {
     background: #fef2f2;
     border: 1px solid #fecaca;
@@ -136,6 +214,7 @@ CUSTOM_CSS = """
     display: flex;
     align-items: center;
     justify-content: space-between;
+    animation: sw-shake 0.5s ease both;
   }
   .sw-error-text {
     color: #991b1b;
@@ -143,34 +222,96 @@ CUSTOM_CSS = """
     font-size: 0.9rem;
   }
 
-  /* Metric cards with subtle color */
+  /* Metric cards with subtle color + pop-in + hover lift */
   [data-testid="stMetric"] {
     background: #f8fafc;
     padding: 0.75rem;
     border-radius: 10px;
     border: 1px solid #e2e8f0;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    animation: sw-pop 0.45s ease both;
+  }
+  [data-testid="stMetric"]:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 6px 16px rgba(102, 126, 234, 0.12);
+    border-color: #c7d2fe;
   }
 
-  /* Buttons more prominent */
+  /* Buttons — lift + animated shine sweep on hover */
+  .stButton > button {
+    transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease;
+  }
+  .stButton > button:active { transform: translateY(1px) scale(0.99); }
   .stButton > button[kind="primary"] {
+    position: relative;
+    overflow: hidden;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     border: none;
     font-weight: 600;
     box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
   }
+  .stButton > button[kind="primary"]::after {
+    content: "";
+    position: absolute;
+    top: 0; left: 0;
+    width: 35%; height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent);
+    transform: translateX(-150%) skewX(-20deg);
+    transition: none;
+  }
   .stButton > button[kind="primary"]:hover {
-    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    box-shadow: 0 6px 16px rgba(102, 126, 234, 0.45);
     transform: translateY(-1px);
   }
+  .stButton > button[kind="primary"]:hover::after {
+    animation: sw-shine 0.9s ease;
+  }
 
-  /* Sidebar tighter */
+  /* Download buttons — subtle lift */
+  [data-testid="stDownloadButton"] > button {
+    transition: transform 0.15s ease, box-shadow 0.2s ease;
+  }
+  [data-testid="stDownloadButton"] > button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  }
+
+  /* Tabs — animated underline + hover color */
+  .stTabs [data-baseweb="tab"] {
+    transition: color 0.2s ease;
+  }
+  .stTabs [data-baseweb="tab-highlight"] {
+    transition: all 0.25s ease;
+  }
+
+  /* Sidebar tighter + gentle slide-in */
   section[data-testid="stSidebar"] > div {
     padding-top: 1rem;
+    animation: sw-fade-in 0.6s ease both;
+  }
+
+  /* Success / info / toast alerts fade up into view */
+  [data-testid="stAlert"] {
+    animation: sw-fade-in-up 0.4s ease both;
+  }
+
+  /* Slightly livelier default spinner */
+  [data-testid="stSpinner"] > div {
+    border-top-color: #7c3aed !important;
   }
 
   /* Hide the default Streamlit header/menu for a cleaner look */
   #MainMenu {visibility: hidden;}
   footer {visibility: hidden;}
+
+  /* Respect users who prefer reduced motion — disable all animation */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)

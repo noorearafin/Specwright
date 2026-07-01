@@ -53,8 +53,8 @@ CUSTOM_CSS = """
     to   { opacity: 1; }
   }
   @keyframes sw-pulse-glow {
-    0%, 100% { box-shadow: 0 2px 8px rgba(124, 58, 237, 0.2); }
-    50%      { box-shadow: 0 4px 18px rgba(124, 58, 237, 0.5); }
+    0%, 100% { box-shadow: 0 2px 8px rgba(124, 58, 237, 0.18); }
+    50%      { box-shadow: 0 3px 12px rgba(124, 58, 237, 0.30); }
   }
   @keyframes sw-shine {
     0%   { transform: translateX(-120%) skewX(-20deg); }
@@ -91,14 +91,14 @@ CUSTOM_CSS = """
     margin-bottom: 1.25rem;
     box-shadow: 0 4px 20px rgba(102, 126, 234, 0.25);
   }
-  /* Diagonal light sweep across the hero */
+  /* Diagonal light sweep across the hero — subtle, slow, with a long pause */
   .sw-hero::after {
     content: "";
     position: absolute;
     top: 0; left: 0;
     width: 40%; height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);
-    animation: sw-shine 6s ease-in-out infinite;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.10), transparent);
+    animation: sw-shine 11s ease-in-out infinite;
     pointer-events: none;
   }
   .sw-hero h1 {
@@ -157,7 +157,7 @@ CUSTOM_CSS = """
     border-color: #7c3aed;
     color: #5b21b6;
     font-weight: 600;
-    animation: sw-fade-in-up 0.5s ease both, sw-pulse-glow 2.2s ease-in-out infinite 0.5s;
+    animation: sw-fade-in-up 0.5s ease both, sw-pulse-glow 3.2s ease-in-out infinite 0.5s;
   }
   .sw-step-num {
     display: inline-block;

@@ -1,0 +1,880 @@
+<title>Specwright · Pipeline Prototype</title>
+<style>
+  /* Deliberately single-theme: a white spec sheet, same for every viewer. */
+  :root, :root[data-theme="dark"], :root[data-theme="light"]{
+    --bg:#FFFFFF; --panel:#FFFFFF; --panel2:#F6F7F4; --ink:#1A211B; --muted:#68726A;
+    --line:#E5E8E0; --line2:#D2D6CC;
+    --acc:#177245; --acc-ink:#0E5A36; --acc-soft:#EAF3EC; --acc-line:#BFDCCB;
+    --warn:#8F5F00; --warn-bg:#FCF4DF; --warn-line:#E8D6A2;
+    --p0:#B3362B; --p0-bg:#F8E9E7; --p1:#8F5F00; --p1-bg:#F7EFD9; --p2:#68726A; --p2-bg:#EEF0EA;
+    --term-bg:#171C18; --term-ink:#DCE3DC; --term-dim:#7C877D; --term-green:#7FD6A4; --term-warn:#E0B75C;
+    --term-blue:#8FB8DC; --code-bg:#F0F2EA;
+    color-scheme: light;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg); color:var(--ink); margin:0; padding:40px 22px 80px;
+    font:15px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
+  .wrap{max-width:1040px; margin:0 auto;}
+  code,.mono{font-family:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;}
+  code{background:var(--code-bg); padding:1px 5px; border-radius:4px; font-size:.87em;}
+
+  /* header */
+  .doc-eyebrow{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:11.5px;
+    color:var(--muted); letter-spacing:.04em; margin:0 0 14px; display:flex; gap:12px; flex-wrap:wrap;}
+  .doc-eyebrow .acc{color:var(--acc-ink); font-weight:600;}
+  header h1{font-size:clamp(26px,4vw,34px); margin:0 0 10px; font-weight:650; letter-spacing:-.015em;
+    line-height:1.15; text-wrap:balance;}
+  header .lede{margin:0 0 0; color:var(--muted); max-width:64ch; font-size:15px;}
+  header{padding-bottom:26px; border-bottom:1px solid var(--line2); margin-bottom:22px;}
+
+  /* stepper rail */
+  .stepper{display:flex; gap:0; margin-bottom:34px; border:1px solid var(--line); border-radius:8px;
+    background:var(--panel); overflow-x:auto;}
+  .step{flex:1; min-width:130px; font:inherit; background:none; border:none; text-align:left;
+    padding:11px 14px 10px; cursor:pointer; color:var(--muted); border-bottom:2px solid transparent;
+    transition:background .15s;}
+  .step + .step{border-left:1px solid var(--line);}
+  .step:hover{background:var(--panel2);}
+  .step .no{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:10.5px;
+    letter-spacing:.08em; display:block; margin-bottom:2px;}
+  .step .lbl{font-size:13px; font-weight:600;}
+  .step.done{color:var(--ink);} .step.done .no{color:var(--acc-ink);}
+  .step.done .no::after{content:" ·  done";}
+  .step.current{border-bottom-color:var(--acc); color:var(--ink); background:var(--acc-soft);}
+  .step.current .no{color:var(--acc-ink);}
+  .step:focus-visible{outline:2px solid var(--acc); outline-offset:-2px;}
+
+  /* sections */
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:24px 26px; margin-bottom:26px; scroll-margin-top:16px;}
+  .sec-head{display:flex; align-items:baseline; gap:14px; margin-bottom:4px;}
+  .sec-no{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:12px;
+    color:var(--acc-ink); font-weight:600; letter-spacing:.05em;}
+  .panel h2{margin:0; font-size:17.5px; font-weight:650; letter-spacing:-.01em;}
+  .panel .sub{margin:6px 0 18px; color:var(--muted); font-size:13.5px; max-width:72ch;}
+  .lockmsg{color:var(--muted); font-size:13.5px; background:var(--panel2); border:1px dashed var(--line2);
+    border-radius:8px; padding:13px 16px; margin:14px 0 0;}
+  .new{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; display:inline-block; font-size:10px;
+    font-weight:600; letter-spacing:.05em; color:var(--acc-ink); background:var(--acc-soft);
+    border:1px solid var(--acc-line); border-radius:4px; padding:0 6px; vertical-align:2px;}
+
+  /* motion */
+  .reveal{animation:reveal .32s ease-out;}
+  @keyframes reveal{from{opacity:0; transform:translateY(10px);} to{opacity:1; transform:none;}}
+
+  /* page-load sequence: header, rail, then sections cascade in */
+  header, .stepper, .wrap > .panel, .ledger, footer{opacity:0; animation:reveal .5s ease-out forwards;}
+  header{animation-delay:.05s;} .stepper{animation-delay:.15s;}
+  .wrap > .panel:nth-of-type(1){animation-delay:.25s;}
+  .wrap > .panel:nth-of-type(2){animation-delay:.33s;}
+  .wrap > .panel:nth-of-type(3){animation-delay:.41s;}
+  .wrap > .panel:nth-of-type(4){animation-delay:.49s;}
+  .wrap > .panel:nth-of-type(5){animation-delay:.57s;}
+  .wrap > .panel:nth-of-type(6){animation-delay:.65s;}
+  .ledger{animation-delay:.73s;} footer{animation-delay:.8s;}
+  @media (prefers-reduced-motion: reduce){
+    header,.stepper,.wrap > .panel,.ledger,footer{opacity:1; animation:none;}
+  }
+
+  /* current step: accent underline draws in and breathes */
+  .step.current{position:relative;}
+  .step.current::after{content:""; position:absolute; left:0; bottom:-2px; height:2px; width:100%;
+    background:var(--acc); transform-origin:left; animation:draw .5s ease-out, breathe 3s ease-in-out .5s infinite;}
+  @keyframes draw{from{transform:scaleX(0);} to{transform:scaleX(1);}}
+  @keyframes breathe{0%,100%{opacity:1;} 50%{opacity:.45;}}
+
+  /* selection-count pulse when the scope changes */
+  .sumband.pulse{animation:pulse .5s ease-out;}
+  @keyframes pulse{0%{background:var(--acc-line);} 100%{background:var(--acc-soft);}}
+
+  /* gentle lift on interactive cards */
+  .preset, .tile, .btn{transition:transform .18s ease, box-shadow .18s ease, border-color .15s, background .15s, filter .15s;}
+  .preset:hover{transform:translateY(-2px); box-shadow:0 6px 14px -8px rgba(26,33,27,.28);}
+  .btn:hover:not(:disabled){transform:translateY(-1px); box-shadow:0 5px 12px -7px rgba(14,90,54,.5);}
+  .btn:active:not(:disabled){transform:translateY(0); box-shadow:none;}
+  table.cases tbody tr{transition:background .12s;}
+  .chip{transition:background .15s, border-color .15s, color .15s, transform .12s;}
+  .chip:active{transform:scale(.95);}
+
+  /* buttons & inputs */
+  .btn{background:var(--acc); color:#fff; border:1px solid var(--acc); border-radius:7px;
+    padding:9px 18px; font:inherit; font-size:13.5px; font-weight:600; cursor:pointer;
+    transition:filter .15s;}
+  .btn:hover:not(:disabled){filter:brightness(1.08);}
+  .btn:disabled{opacity:.45; cursor:default;}
+  .btn.ghost{background:var(--panel); color:var(--ink); border:1px solid var(--line2); font-weight:550;}
+  .btn.ghost:hover:not(:disabled){background:var(--panel2); filter:none;}
+  .btn.sm{padding:6px 12px; font-size:12.5px;}
+  select,input[type=text],input[type=number],textarea{background:var(--panel); color:var(--ink);
+    border:1px solid var(--line2); border-radius:7px; padding:8px 11px; font:inherit; font-size:13.5px;}
+  textarea{width:100%; min-height:190px; resize:vertical;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:12.5px; line-height:1.6;}
+  button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{
+    outline:2px solid var(--acc); outline-offset:2px;}
+  .busy{display:flex; align-items:center; gap:9px; color:var(--acc-ink); font-size:13px; font-weight:600;}
+  .spin{width:13px; height:13px; border-radius:50%; border:2px solid var(--acc-soft);
+    border-top-color:var(--acc); animation:spin .7s linear infinite; flex:none;}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .toast{font-size:12.5px; color:var(--acc-ink); font-weight:600;}
+  .btnrow{display:flex; gap:9px; flex-wrap:wrap; align-items:center;}
+  .mt14{margin-top:14px;}
+
+  /* tabs */
+  .tabs{display:inline-flex; border:1px solid var(--line2); border-radius:7px; overflow:hidden; margin-bottom:14px;}
+  .tab{background:var(--panel); border:none; color:var(--muted); font:inherit; font-size:12.5px;
+    font-weight:600; padding:7px 15px; cursor:pointer;}
+  .tab + .tab{border-left:1px solid var(--line2);}
+  .tab.on{background:var(--acc-soft); color:var(--acc-ink);}
+
+  /* plan */
+  .plan details{border-bottom:1px solid var(--line);}
+  .plan details:first-child{border-top:1px solid var(--line);}
+  .plan summary{cursor:pointer; padding:10px 4px; font-size:13.5px; font-weight:600; list-style-position:inside;}
+  .plan .body{padding:2px 4px 14px 24px; font-size:13.5px; color:var(--muted); max-width:76ch;}
+  .plan .body ul{margin:4px 0 0; padding-left:18px;} .plan .body li{margin:2px 0;}
+  .plan .body table{font-size:12.5px; border-collapse:collapse; margin-top:6px;}
+  .plan .body th,.plan .body td{border:1px solid var(--line); padding:4px 9px; text-align:left;}
+
+  .estbox{background:var(--code-bg); border:1px solid var(--line); border-radius:8px; padding:12px 15px;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:12px; line-height:1.6;
+    overflow-x:auto; white-space:pre; margin-top:14px;}
+
+  /* metric strip */
+  .tiles{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:0; margin-bottom:16px;
+    border:1px solid var(--line); border-radius:8px; overflow:hidden;}
+  .tile{background:var(--panel); padding:12px 16px;}
+  .tile + .tile{border-left:1px solid var(--line);}
+  @media (max-width:680px){ .tiles{grid-template-columns:1fr 1fr;} .tile:nth-child(3){border-left:none; border-top:1px solid var(--line);} .tile:nth-child(4){border-top:1px solid var(--line);} }
+  .tile .k{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:10.5px;
+    letter-spacing:.06em; text-transform:uppercase; color:var(--muted);}
+  .tile .v{font-size:22px; font-weight:650; font-variant-numeric:tabular-nums; margin-top:2px;}
+  .tile .n{font-size:11.5px; color:var(--muted);}
+
+  /* tables */
+  .tablewrap{overflow-x:auto; border:1px solid var(--line); border-radius:8px;}
+  table.cases{border-collapse:collapse; width:100%; font-size:13px; min-width:720px;}
+  table.cases th{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:10.5px;
+    letter-spacing:.06em; text-transform:uppercase; color:var(--muted); text-align:left;
+    padding:9px 12px; border-bottom:1px solid var(--line2); background:var(--panel2); font-weight:600;}
+  table.cases td{padding:6px 12px; border-bottom:1px solid var(--line); vertical-align:middle;}
+  table.cases tr:last-child td{border-bottom:none;}
+  table.cases tbody tr:hover{background:var(--panel2);}
+  td.mono{font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--muted); font-size:12.3px;}
+  .pill{display:inline-flex; align-items:center; gap:5px; border-radius:5px; padding:1px 8px;
+    font-size:11px; font-weight:650; font-variant-numeric:tabular-nums;}
+  .pill::before{content:""; width:6px; height:6px; border-radius:50%; background:currentColor;}
+  .pP0{color:var(--p0); background:var(--p0-bg);} .pP1{color:var(--p1); background:var(--p1-bg);} .pP2{color:var(--p2); background:var(--p2-bg);}
+  button.pill{border:none; cursor:pointer; font:inherit; font-size:11px; font-weight:650;}
+  button.pill:hover{outline:1px solid currentColor;}
+  .tag{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:11px; color:var(--muted);
+    background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:0 6px;}
+  .del{background:none; border:none; color:var(--muted); cursor:pointer; font-size:13px; padding:2px 7px; border-radius:5px;}
+  .del:hover{color:var(--p0); background:var(--p0-bg);}
+  .autochk{accent-color:var(--acc); width:15px; height:15px;}
+  .edithint{font-size:12.5px; color:var(--acc-ink); font-weight:600; margin:9px 2px 0;}
+
+  /* scope gate */
+  .presets{display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:8px;}
+  .preset{background:var(--panel); border:1px solid var(--line2); border-radius:8px; padding:10px 12px 9px;
+    cursor:pointer; text-align:left; color:var(--ink); font:inherit; transition:border-color .15s, background .15s;}
+  .preset:hover{border-color:var(--acc);}
+  .preset.active{background:var(--acc-soft); border-color:var(--acc);}
+  .preset .name{font-weight:650; font-size:13px;}
+  .preset .count{font-size:19px; font-weight:650; font-variant-numeric:tabular-nums; margin:1px 0 0;}
+  .preset.active .count{color:var(--acc-ink);}
+  .preset .desc{font-size:11px; color:var(--muted); line-height:1.35; margin-top:1px;}
+  .savedrow{display:flex; align-items:center; gap:10px; margin-top:14px; flex-wrap:wrap;}
+  .savedrow label{font-size:13px; font-weight:600;}
+  .savedrow select{min-width:280px;}
+  .filters{margin-top:18px; padding-top:16px; border-top:1px solid var(--line);}
+  .fgrid{display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:16px;}
+  .fgroup .flabel{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:10.5px;
+    font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin-bottom:7px;}
+  .chips{display:flex; flex-wrap:wrap; gap:6px;}
+  .chip{border:1px solid var(--line2); background:var(--panel); color:var(--muted); border-radius:6px;
+    padding:3px 10px; font:inherit; font-size:12.5px; cursor:pointer; transition:all .12s;}
+  .chip.on{background:var(--acc-soft); border-color:var(--acc); color:var(--acc-ink); font-weight:600;}
+  .frow2{display:grid; grid-template-columns:2fr 1fr 1fr; gap:16px; margin-top:16px;}
+  @media (max-width:720px){.frow2{grid-template-columns:1fr;}}
+  .fgroup input[type=text],.fgroup input[type=number]{width:100%;}
+  .check{display:flex; align-items:center; gap:8px; font-size:13.5px; margin-top:26px;}
+  .check input{accent-color:var(--acc); width:16px; height:16px;}
+  .saverow{display:flex; gap:9px; margin-top:16px; align-items:center; flex-wrap:wrap;}
+  .saverow input{flex:1; min-width:180px;}
+  .summary{margin-top:18px; display:flex; flex-direction:column; gap:10px;}
+  .warnband{background:var(--warn-bg); border:1px solid var(--warn-line); color:var(--warn);
+    border-radius:8px; padding:10px 14px; font-size:13px; font-weight:550;}
+  .sumband{background:var(--acc-soft); border:1px solid var(--acc-line); border-radius:8px;
+    padding:12px 15px; display:flex; justify-content:space-between; align-items:center; gap:14px; flex-wrap:wrap;}
+  .sumband .big{font-weight:650; color:var(--acc-ink);}
+  .sumband .desc{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:11.5px; color:var(--acc-ink);}
+
+  /* stage 5 */
+  .okband{background:var(--acc-soft); border:1px solid var(--acc-line); color:var(--acc-ink);
+    border-radius:8px; padding:11px 14px; font-size:13.5px; font-weight:600; margin-bottom:14px;}
+  .suite{display:grid; grid-template-columns:250px 1fr; gap:14px;}
+  @media (max-width:760px){.suite{grid-template-columns:1fr;}}
+  .ftree{background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:12px 8px;
+    font-size:12.3px; font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; line-height:1.75; overflow-x:auto;}
+  .ftree button{display:block; width:100%; text-align:left; background:none; border:none; color:var(--muted);
+    font:inherit; padding:1px 9px; border-radius:5px; cursor:pointer; white-space:nowrap;}
+  .ftree button.dir{color:var(--ink); font-weight:600; cursor:default;}
+  .ftree button:not(.dir):hover{background:var(--acc-soft); color:var(--acc-ink);}
+  .ftree button.on{background:var(--acc-soft); color:var(--acc-ink); font-weight:600;}
+  .codebox{background:var(--term-bg); border:1px solid var(--line2); border-radius:8px; overflow:auto; max-height:460px;}
+  .codebox pre{margin:0; padding:16px 18px; font-family:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+    font-size:12.3px; line-height:1.6; white-space:pre; color:var(--term-ink);}
+  .c-cm{color:var(--term-dim);} .c-s{color:var(--term-green);} .c-k{color:var(--term-blue);}
+  .greps{margin-top:16px;}
+
+  /* terminal */
+  .term{background:var(--term-bg); color:var(--term-ink); border:1px solid var(--line2); border-radius:8px;
+    padding:16px 18px; overflow-x:auto; font-size:12.8px; line-height:1.6;}
+  .term pre{margin:0; font-family:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace; white-space:pre;}
+  .t-p{color:var(--term-dim);} .t-c{color:var(--term-green); font-weight:600;} .t-w{color:var(--term-warn);}
+
+  /* ledger */
+  .ledger{display:grid; grid-template-columns:1fr 1fr; border:1px solid var(--line); border-radius:10px;
+    overflow:hidden; margin-bottom:26px;}
+  @media (max-width:720px){.ledger{grid-template-columns:1fr;}}
+  .ledger .col{padding:20px 24px; background:var(--panel);}
+  .ledger .col + .col{border-left:1px solid var(--line);}
+  @media (max-width:720px){.ledger .col + .col{border-left:none; border-top:1px solid var(--line);}}
+  .ledger h3{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; margin:0 0 12px; font-size:11px;
+    letter-spacing:.06em; text-transform:uppercase; font-weight:600;}
+  .ledger .before h3{color:var(--muted);} .ledger .after h3{color:var(--acc-ink);}
+  .ledger ul{margin:0; padding-left:18px; display:flex; flex-direction:column; gap:7px; font-size:13.5px;}
+  .ledger .before{background:var(--panel2);} .ledger .before ul{color:var(--muted);}
+  footer{color:var(--muted); font-size:12.5px; border-top:1px solid var(--line2); padding-top:18px; max-width:72ch;}
+  @media (prefers-reduced-motion: reduce){*{transition:none !important; animation:none !important;}}
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="doc-eyebrow"><span class="acc">SPECWRIGHT</span><span>prototype · branch claude/kind-sagan-vmrtcx</span><span>rev 2026-07-12</span></p>
+    <h1>From a plain-English PRD to a running Playwright suite</h1>
+    <p class="lede">All five stages of the pipeline, clickable end-to-end. LLM calls are simulated with
+      canned output from the login PRD; the scope-gate filtering is the exact <code>apply_scope()</code>
+      that shipped on this branch. Start with <strong>Load sample</strong> in §1.</p>
+  </header>
+
+  <nav class="stepper" id="stepper" aria-label="Pipeline progress"></nav>
+
+  <!-- ── §1 ──────────────────────────────────────────────────── -->
+  <section class="panel" id="s1">
+    <div class="sec-head"><span class="sec-no">§1</span><h2>Requirements</h2></div>
+    <p class="sub">Upload a .md/.txt, paste text, or load the bundled sample. Requirement IDs (REQ-1, REQ-2…) are extracted automatically.</p>
+    <div class="tabs">
+      <button class="tab on" id="tab-sample" type="button">Use sample</button>
+      <button class="tab" id="tab-paste" type="button">Paste</button>
+      <button class="tab" type="button" onclick="toast('t1','Demo — file upload works in the real app')">Upload</button>
+    </div>
+    <div class="btnrow" style="margin-bottom:10px">
+      <button class="btn ghost sm" id="loadsample" type="button">Load login PRD sample</button>
+      <span class="toast" id="t1"></span>
+    </div>
+    <textarea id="prd" placeholder="# Paste your PRD / SRS / BRD here…" aria-label="Requirements document"></textarea>
+    <div class="btnrow mt14">
+      <button class="btn" id="genplan" type="button" disabled>Generate plan</button>
+      <span class="busy" id="busy1" hidden><span class="spin"></span><span id="busy1t"></span></span>
+    </div>
+  </section>
+
+  <!-- ── §2 ──────────────────────────────────────────────────── -->
+  <section class="panel" id="s2">
+    <div class="sec-head"><span class="sec-no">§2</span><h2>Test plan <span class="mono" style="font-size:12px;color:var(--muted)">IEEE-829</span></h2></div>
+    <p class="lockmsg" id="lock2">Provide requirements and generate a plan first.</p>
+    <div id="planbody" hidden>
+      <p class="sub">Review gate #1 — every section is editable in the real app; saving re-exports all four formats.</p>
+      <div class="plan" id="plan"></div>
+      <div class="btnrow mt14">
+        <button class="btn ghost sm" type="button" onclick="toast('t2','Demo — MD/HTML/PDF/DOCX export in the real app')">Markdown</button>
+        <button class="btn ghost sm" type="button" onclick="toast('t2','Demo — MD/HTML/PDF/DOCX export in the real app')">HTML</button>
+        <button class="btn ghost sm" type="button" onclick="toast('t2','Demo — MD/HTML/PDF/DOCX export in the real app')">PDF</button>
+        <button class="btn ghost sm" type="button" onclick="toast('t2','Demo — MD/HTML/PDF/DOCX export in the real app')">DOCX</button>
+        <span class="toast" id="t2"></span>
+      </div>
+      <div class="btnrow mt14">
+        <button class="btn" id="gencases" type="button">Generate cases</button>
+        <span class="busy" id="busy2" hidden><span class="spin"></span><span id="busy2t"></span></span>
+      </div>
+      <div class="estbox" id="estbox" hidden></div>
+    </div>
+  </section>
+
+  <!-- ── §3 ──────────────────────────────────────────────────── -->
+  <section class="panel" id="s3">
+    <div class="sec-head"><span class="sec-no">§3</span><h2>Test cases</h2></div>
+    <p class="lockmsg" id="lock3">Generate the test plan first.</p>
+    <div id="casesbody" hidden>
+      <p class="sub">Review gate #2 — click a priority chip to cycle P0 → P1 → P2, toggle Auto, or remove a row.
+        Every edit re-exports all six formats and updates §4 live.</p>
+      <div class="tiles" id="tiles"></div>
+      <div class="tablewrap"><table class="cases">
+        <thead><tr><th>ID</th><th>Req</th><th>Title</th><th>Type</th><th>Target</th><th>Priority</th><th>Auto</th><th></th></tr></thead>
+        <tbody id="casetbody"></tbody>
+      </table></div>
+      <p class="edithint" id="edithint"></p>
+      <div class="btnrow mt14">
+        <button class="btn ghost sm" type="button" onclick="toast('t3','Demo — 6-format export in the real app')">CSV</button>
+        <button class="btn ghost sm" type="button" onclick="toast('t3','Demo — 6-format export in the real app')">Excel</button>
+        <button class="btn ghost sm" type="button" onclick="toast('t3','Demo — 6-format export in the real app')">Jira</button>
+        <button class="btn ghost sm" type="button" onclick="toast('t3','Demo — 6-format export in the real app')">TestRail</button>
+        <button class="btn ghost sm" type="button" onclick="toast('t3','Demo — 6-format export in the real app')">HTML</button>
+        <button class="btn ghost sm" type="button" onclick="toast('t3','Demo — 6-format export in the real app')">Markdown</button>
+        <span class="toast" id="t3"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── §4 ──────────────────────────────────────────────────── -->
+  <section class="panel" id="s4">
+    <div class="sec-head"><span class="sec-no">§4</span><h2>Automation scope</h2></div>
+    <p class="lockmsg" id="lock4">Generate test cases first.</p>
+    <div id="scopebody" hidden>
+      <p class="sub">Presets show live counts and react to your §3 edits.
+        <code>api</code>, <code>ui</code> and everything under Custom shipped on this branch.</p>
+      <div class="presets" id="presets"></div>
+      <div class="savedrow">
+        <label for="savedsel">Saved scopes (scopes.yaml) <span class="new">new</span></label>
+        <select id="savedsel"></select>
+      </div>
+      <div class="filters" id="filters" hidden>
+        <div class="fgrid">
+          <div class="fgroup"><div class="flabel">Priorities</div><div class="chips" id="ch-prio"></div></div>
+          <div class="fgroup"><div class="flabel">Types</div><div class="chips" id="ch-type"></div></div>
+          <div class="fgroup"><div class="flabel">Targets</div><div class="chips" id="ch-tgt"></div></div>
+          <div class="fgroup"><div class="flabel">Requirements <span class="new">new</span></div><div class="chips" id="ch-req"></div></div>
+        </div>
+        <div class="frow2">
+          <div class="fgroup">
+            <div class="flabel">Keyword / regex <span class="new">new</span></div>
+            <input type="text" id="grep" placeholder="e.g. login|password — matches title, steps, expected">
+          </div>
+          <div class="fgroup">
+            <div class="flabel">Max cases (0 = no cap) <span class="new">new</span></div>
+            <input type="number" id="limit" min="0" value="0">
+          </div>
+          <div class="fgroup">
+            <label class="check"><input type="checkbox" id="manual"> Include manual cases <span class="new">new</span></label>
+          </div>
+        </div>
+        <div class="saverow">
+          <input type="text" id="scopename" placeholder="Save as named scope — e.g. payments-smoke">
+          <button class="btn sm" id="savebtn" type="button" disabled>Save scope</button>
+          <span class="toast" id="t4"></span>
+        </div>
+      </div>
+      <div class="summary">
+        <div class="warnband" id="warn" hidden></div>
+        <div class="sumband" id="sumband">
+          <div><span class="big" id="sumcount"></span><br><span class="desc" id="sumdesc"></span></div>
+          <div class="btnrow">
+            <span class="busy" id="busy4" hidden><span class="spin"></span><span>Generating Playwright tests…</span></span>
+            <button class="btn" id="gentests" type="button">Generate tests</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── §5 ──────────────────────────────────────────────────── -->
+  <section class="panel" id="s5">
+    <div class="sec-head"><span class="sec-no">§5</span><h2>Playwright suite</h2></div>
+    <p class="lockmsg" id="lock5">Run §4 to generate Playwright tests.</p>
+    <div id="suitebody" hidden>
+      <div class="okband" id="okband"></div>
+      <div class="suite">
+        <div class="ftree" id="ftree"></div>
+        <div class="codebox"><pre id="codeview"></pre></div>
+      </div>
+      <div class="greps">
+        <p class="sub" style="margin:0 0 8px">Every test is tagged — slice the suite at run time:</p>
+        <div class="term"><pre><span class="t-p">$</span> <span class="t-c">npx playwright test --grep @P0</span>          <span class="t-p"># smoke</span>
+<span class="t-p">$</span> <span class="t-c">npx playwright test --grep @security</span>    <span class="t-p"># security only</span>
+<span class="t-p">$</span> <span class="t-c">npx playwright test --grep "@P0|@P1"</span>    <span class="t-p"># regression</span></pre></div>
+      </div>
+      <div class="btnrow mt14">
+        <button class="btn" type="button" onclick="toast('t5','Demo — the real app zips the whole project')">Download full project (.zip)</button>
+        <span class="toast" id="t5"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── CLI ──────────────────────────────────────────────────── -->
+  <section class="panel">
+    <div class="sec-head"><span class="sec-no">§6</span><h2>Same pipeline from the CLI <span class="new">new flags</span></h2></div>
+    <p class="sub">Any scope flag skips the interactive gate — built for CI. Real output from the pushed code:</p>
+    <div class="term"><pre><span class="t-p">$</span> <span class="t-c">python qa_agent.py --list-scopes</span>
+Built-in presets:
+  smoke           — P0 happy paths only (fastest, for CI gate)
+  regression      — P0 + P1, all functional/negative/boundary (nightly)
+  security        — Security cases only (run before release)
+  accessibility   — Accessibility-only run (before UX review)
+  api             — API-target cases only (no browser needed)
+  ui              — UI-target cases only (browser flows)
+  everything      — All automatable cases (full suite)
+Saved scopes (scopes.yaml):
+  ci-gate         — priorities=P0, types=functional, limit=15
+
+<span class="t-p">$</span> <span class="t-c">python qa_agent.py prd.md out/ --scope regression --exclude-types boundary --grep login</span>
+▶ Scope (from flags): priorities=P0/P1, types=functional/negative/boundary/contract, NOT types=boundary, grep~'login'
+▶ Selected 7 cases — 2/5 requirements covered.
+<span class="t-w">  ⚠ No cases selected for: REQ-3, REQ-4, REQ-5</span>
+
+<span class="t-p">$</span> <span class="t-c">python qa_agent.py prd.md out/ --priorities P5</span>
+<span class="t-w">  ⚠ 'P5' in scope['priorities'] matches no case (known priority values: ['P0', 'P1', 'P2'])</span>
+<span class="t-w">  ⚠ This scope selects ZERO cases — nothing would be automated.</span>
+
+<span class="t-p">$</span> <span class="t-c">python qa_agent.py prd.md out/ --requirements REQ-2 REQ-3 --limit 10 --save-scope payments-deep</span>
+▶ Scope saved as 'payments-deep' in scopes.yaml
+▶ Selected 10 cases — 2/5 requirements covered.</pre></div>
+  </section>
+
+  <!-- ── Before / after ───────────────────────────────────────── -->
+  <section class="ledger">
+    <div class="col before">
+      <h3>Scope gate — before</h3>
+      <ul>
+        <li>5 presets, or custom = priority / type / target only</li>
+        <li>No way to scope to one requirement or one case</li>
+        <li>Typo in a filter → silently empty suite</li>
+        <li>No warning when a requirement lost all its cases</li>
+        <li>Custom filters rebuilt by hand every session</li>
+        <li>CLI: interactive prompt or all-or-nothing <code>--non-interactive</code></li>
+      </ul>
+    </div>
+    <div class="col after">
+      <h3>After — this branch</h3>
+      <ul>
+        <li>7 presets (+<code>api</code>, +<code>ui</code>) and 8 combinable filter dimensions</li>
+        <li><code>requirements</code>, <code>ids</code>, <code>exclude_*</code>, <code>grep</code>, <code>limit</code>, <code>include_manual</code></li>
+        <li>Validation names the typo and lists the real values</li>
+        <li>Coverage guard: “No cases selected for: REQ-4”</li>
+        <li>Named scopes saved to <code>scopes.yaml</code> — shareable, committable</li>
+        <li>CLI: <code>--scope</code> + 8 filter flags, <code>--save-scope</code>, <code>--list-scopes</code></li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>Scope filtering on this page is a line-for-line port of <span class="mono">scope.py · apply_scope()</span>.
+    Stages §1–§3 and §5 simulate the LLM round-trips with canned output so the whole flow is walkable.</footer>
+</div>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const reduceMotion=matchMedia("(prefers-reduced-motion: reduce)").matches;
+function toast(id,msg){ const el=$(id); el.textContent=msg; clearTimeout(el._t);
+  el._t=setTimeout(()=>el.textContent="",2600); }
+function reveal(el){ el.hidden=false; el.classList.remove("reveal"); void el.offsetWidth; el.classList.add("reveal"); }
+function countUp(el){
+  if(reduceMotion) return;
+  const final=el.textContent;
+  if(!/\d/.test(final)) return;
+  const t0=performance.now(), dur=650;
+  (function frame(t){
+    const k=Math.min(1,(t-t0)/dur), e=1-Math.pow(1-k,3);
+    el.textContent=final.replace(/\d+/g,m=>Math.round(parseInt(m,10)*e));
+    if(k<1) requestAnimationFrame(frame); else el.textContent=final;
+  })(t0);
+}
+
+// ── Sample PRD ───────────────────────────────────────────────────
+const SAMPLE_PRD=`# PRD — Account Login & Session Management  (v1.3)
+
+## REQ-1  Email/password login
+Users sign in with email + password. Errors must not reveal whether
+the email exists. Inputs are sanitized against injection.
+
+## REQ-2  Password reset
+"Forgot password" sends a single-use reset link valid for 24 hours.
+Unknown emails receive the same generic confirmation message.
+
+## REQ-3  Brute-force protection
+After 5 failed attempts the account locks for 15 minutes.
+Lockout is per-account, and messaging must avoid user enumeration.
+
+## REQ-4  Session management
+Sessions use HttpOnly+Secure cookies, expire after 30 min idle,
+cap at 3 concurrent sessions, and are invalidated on logout.
+
+## REQ-5  Accessibility
+The login flow meets WCAG 2.1 AA: labels, contrast >= 4.5:1,
+keyboard-only operation, and aria-live error announcements.`;
+
+// ── Canned dataset (what §2 "generates") ─────────────────────────
+const RAW=[
+ ["TC-001","REQ-1","Login succeeds with valid credentials","functional","ui","P0",1],
+ ["TC-002","REQ-1","Login fails with wrong password","negative","ui","P0",1],
+ ["TC-003","REQ-1","Login rejects SQL injection in email field","security","ui","P0",1],
+ ["TC-004","REQ-1","Login rejects XSS payload in password","security","ui","P1",1],
+ ["TC-005","REQ-1","Email field enforces 254-char boundary","boundary","ui","P2",1],
+ ["TC-006","REQ-1","Login form labels readable by screen reader","accessibility","ui","P1",0],
+ ["TC-007","REQ-2","Password reset email sent for valid account","functional","api","P0",1],
+ ["TC-008","REQ-2","Reset request for unknown email returns generic message","negative","api","P1",1],
+ ["TC-009","REQ-2","Reset link expires after 24h","boundary","api","P1",1],
+ ["TC-010","REQ-2","Expired reset link returns 410","negative","api","P2",1],
+ ["TC-011","REQ-2","Reset token is single-use","security","api","P0",1],
+ ["TC-012","REQ-3","Rate limiter blocks 6th failed login","functional","api","P0",1],
+ ["TC-013","REQ-3","Lockout clears after 15 minutes","boundary","api","P1",1],
+ ["TC-014","REQ-3","Lockout message avoids user enumeration","security","ui","P1",1],
+ ["TC-015","REQ-3","Rate limit counter is per-account not per-IP","contract","api","P2",1],
+ ["TC-016","REQ-4","Session cookie set with HttpOnly + Secure","security","api","P0",1],
+ ["TC-017","REQ-4","Session expires after 30 min idle","functional","api","P1",1],
+ ["TC-018","REQ-4","Logout invalidates session server-side","functional","ui","P0",1],
+ ["TC-019","REQ-4","Concurrent session limit of 3 enforced","boundary","api","P2",1],
+ ["TC-020","REQ-4","Session fixation prevented on login","security","api","P1",1],
+ ["TC-021","REQ-5","Login page passes contrast ratio 4.5:1","accessibility","ui","P1",1],
+ ["TC-022","REQ-5","Full flow operable by keyboard only","accessibility","ui","P1",1],
+ ["TC-023","REQ-5","Error states announced via aria-live","accessibility","ui","P2",1],
+ ["TC-024","REQ-5","Manual exploratory pass on assistive tech","accessibility","ui","P2",0],
+];
+let CASES=[];
+
+// ── Pipeline state ───────────────────────────────────────────────
+const stages=["Requirements","Test plan","Test cases","Scope","Playwright suite"];
+let done=[false,false,false,false,false];
+function currentStep(){ return done.findIndex(d=>!d)===-1?4:done.findIndex(d=>!d); }
+function renderStepper(){
+  const box=$("stepper"); box.innerHTML="";
+  stages.forEach((lbl,i)=>{
+    const b=document.createElement("button"); b.type="button";
+    b.className="step"+(done[i]?" done":(i===currentStep()?" current":""));
+    b.innerHTML=`<span class="no">0${i+1}</span><span class="lbl">${lbl}</span>`;
+    b.onclick=()=>$("s"+(i+1)).scrollIntoView({behavior:"smooth"});
+    box.appendChild(b);
+  });
+}
+
+// ── §1 ───────────────────────────────────────────────────────────
+$("tab-sample").onclick=()=>{ $("tab-sample").classList.add("on"); $("tab-paste").classList.remove("on"); };
+$("tab-paste").onclick=()=>{ $("tab-paste").classList.add("on"); $("tab-sample").classList.remove("on");
+  $("prd").value=""; $("genplan").disabled=true; $("prd").focus(); };
+$("loadsample").onclick=()=>{ $("prd").value=SAMPLE_PRD; $("genplan").disabled=false;
+  toast("t1","Sample loaded — 5 requirements detected (REQ-1…REQ-5)"); };
+$("prd").oninput=e=>{ $("genplan").disabled=!e.target.value.trim(); };
+
+const PLAN=[
+ ["1 · Scope","Covers authentication (REQ-1…REQ-4) and accessibility of the login flow (REQ-5) for the web app. Out of scope: SSO, MFA, mobile clients."],
+ ["2 · Test objectives","<ul><li>REQ-1 — verify credential validation, error opacity, input sanitization</li><li>REQ-2 — verify reset issuance, single-use tokens, 24h expiry</li><li>REQ-3 — verify lockout threshold, decay, anti-enumeration</li><li>REQ-4 — verify cookie flags, idle expiry, concurrency cap, logout</li><li>REQ-5 — verify WCAG 2.1 AA on the full flow</li></ul>"],
+ ["3 · Test approach","Risk-based. Levels: integration (API) + end-to-end (UI). Types: functional, negative, boundary, security, contract, accessibility. Automation via Playwright TypeScript."],
+ ["4 · Features to test","Login form, reset flow, rate limiter, session lifecycle, accessibility of all auth screens."],
+ ["5 · Features NOT to test","SSO providers, password-strength meter (separate PRD), email deliverability."],
+ ["6 · Entry & exit criteria","Entry: staging env seeded, test accounts provisioned. Exit: 100% P0 pass, ≥95% P1 pass, zero open security defects."],
+ ["7 · Test environments","<table><tr><th>Env</th><th>Purpose</th><th>Data</th></tr><tr><td>staging</td><td>full E2E</td><td>seeded fixtures</td></tr><tr><td>ephemeral PR env</td><td>smoke</td><td>synthetic</td></tr></table>"],
+ ["8 · Risks & mitigations","<ul><li>Rate limiter flakiness under parallel runs → serialize REQ-3 specs</li><li>Email dependency for reset → intercept via mailhog</li></ul>"],
+ ["9 · Deliverables","Test plan (this doc), 24 test cases in 6 formats, Playwright suite, automation report."],
+ ["10 · Schedule estimate","Case review 0.5d · automation 1.5d · stabilization 0.5d."],
+];
+$("genplan").onclick=()=>{
+  $("genplan").disabled=true; $("busy1").hidden=false;
+  $("busy1t").textContent="Drafting IEEE-829 plan (LLM, simulated)…";
+  setTimeout(()=>{
+    $("busy1").hidden=true; $("genplan").disabled=false;
+    done[0]=true; renderStepper();
+    $("lock2").hidden=true; reveal($("planbody"));
+    const box=$("plan"); box.innerHTML="";
+    PLAN.forEach(([t,body],i)=>{ const d=document.createElement("details"); if(i<2) d.open=true;
+      d.innerHTML=`<summary>${t}</summary><div class="body">${body}</div>`; box.appendChild(d); });
+    $("s2").scrollIntoView({behavior:"smooth"});
+  },1400);
+};
+
+// ── §2 → cases ───────────────────────────────────────────────────
+$("gencases").onclick=()=>{
+  $("gencases").disabled=true; $("busy2").hidden=false;
+  $("busy2t").textContent="Pass 1 — estimator sizing coverage per requirement…";
+  setTimeout(()=>{
+    reveal($("estbox"));
+    $("estbox").textContent=JSON.stringify({
+      cases_per_requirement:{"REQ-1":6,"REQ-2":5,"REQ-3":4,"REQ-4":5,"REQ-5":4},
+      reasoning:"REQ-1 needs security+boundary depth; REQ-4 has 4 sub-rules; REQ-5 is accessibility-only."
+    },null,2);
+    $("busy2t").textContent="Pass 2 — generating 24 cases (chunked per requirement)…";
+    setTimeout(()=>{
+      $("busy2").hidden=true; $("gencases").disabled=false;
+      CASES=RAW.map(([id,req,title,type,target,prio,auto])=>(
+        {id,requirement_id:req,title,type,target,priority:prio,automatable:!!auto,alive:true}));
+      done[1]=true; done[2]=true; renderStepper();
+      $("lock3").hidden=true; reveal($("casesbody"));
+      $("lock4").hidden=true; reveal($("scopebody"));
+      buildChips(); renderSaved(); renderCases(); renderScope();
+      $("s3").scrollIntoView({behavior:"smooth"});
+    },1500);
+  },1300);
+};
+
+// ── §3: editable cases ───────────────────────────────────────────
+const live=()=>CASES.filter(c=>c.alive);
+function renderTiles(){
+  const cs=live();
+  const p0=cs.filter(c=>c.priority==="P0").length;
+  const ui=cs.filter(c=>c.target==="ui").length, api=cs.filter(c=>c.target==="api").length;
+  const auto=cs.filter(c=>c.automatable).length;
+  $("tiles").innerHTML=`
+    <div class="tile"><div class="k">Total cases</div><div class="v">${cs.length}</div><div class="n">across 5 requirements</div></div>
+    <div class="tile"><div class="k">P0 critical</div><div class="v">${p0}</div><div class="n">must-pass gate</div></div>
+    <div class="tile"><div class="k">UI / API</div><div class="v">${ui} / ${api}</div><div class="n">target split</div></div>
+    <div class="tile"><div class="k">Automatable</div><div class="v">${auto}</div><div class="n">${cs.length-auto} manual</div></div>`;
+  if(!renderTiles._counted){ renderTiles._counted=true;
+    $("tiles").querySelectorAll(".v").forEach(countUp); }
+}
+function edited(){
+  renderCases(); renderScope();
+  $("edithint").textContent=`Saved · ${live().length} cases · re-exported CSV, Excel, Jira, TestRail, HTML, Markdown (simulated)`;
+  clearTimeout(edited._t); edited._t=setTimeout(()=>$("edithint").textContent="",3200);
+}
+function renderCases(){
+  renderTiles();
+  const tb=$("casetbody"); tb.innerHTML="";
+  for(const c of live()){
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td class="mono">${c.id}</td><td class="mono">${c.requirement_id}</td><td>${c.title}</td>
+      <td><span class="tag">${c.type}</span></td><td><span class="tag">${c.target}</span></td>`;
+    const tdP=document.createElement("td");
+    const pb=document.createElement("button"); pb.type="button";
+    pb.className=`pill p${c.priority}`; pb.textContent=c.priority;
+    pb.title="Click to cycle priority";
+    pb.onclick=()=>{ c.priority={P0:"P1",P1:"P2",P2:"P0"}[c.priority]; edited(); };
+    tdP.appendChild(pb); tr.appendChild(tdP);
+    const tdA=document.createElement("td");
+    const ck=document.createElement("input"); ck.type="checkbox"; ck.className="autochk";
+    ck.checked=c.automatable; ck.setAttribute("aria-label","automatable");
+    ck.onchange=()=>{ c.automatable=ck.checked; edited(); };
+    tdA.appendChild(ck); tr.appendChild(tdA);
+    const tdD=document.createElement("td");
+    const del=document.createElement("button"); del.type="button"; del.className="del"; del.textContent="✕";
+    del.setAttribute("aria-label","delete "+c.id);
+    del.onclick=()=>{ c.alive=false; edited(); };
+    tdD.appendChild(del); tr.appendChild(tdD);
+    tb.appendChild(tr);
+  }
+}
+
+// ── Scope logic (port of scope.py apply_scope) ───────────────────
+const FIELD={priorities:"priority",types:"type",targets:"target",requirements:"requirement_id",ids:"id"};
+function compileGrep(p){ try{return new RegExp(p,"i");}catch(e){return new RegExp(p.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"),"i");} }
+function applyScope(cases,scope){
+  scope=scope||{};
+  let out=scope.include_manual?cases.slice():cases.filter(c=>c.automatable);
+  for(const [key,field] of Object.entries(FIELD)){
+    if(scope[key]?.length){ const s=new Set(scope[key]); out=out.filter(c=>s.has(c[field])); }
+    const ex=scope["exclude_"+key];
+    if(ex?.length){ const s=new Set(ex); out=out.filter(c=>!s.has(c[field])); }
+  }
+  if(scope.grep){ const rx=compileGrep(scope.grep); out=out.filter(c=>rx.test(c.id+" "+c.requirement_id+" "+c.title)); }
+  if(scope.limit>0 && out.length>scope.limit){
+    out=out.slice().sort((a,b)=>(a.priority+a.id).localeCompare(b.priority+b.id)).slice(0,scope.limit);
+    out.sort((a,b)=>a.id.localeCompare(b.id));
+  }
+  return out;
+}
+function coverage(all,sel){
+  const reqs=[...new Set(all.map(c=>c.requirement_id))].sort();
+  const n={}; sel.forEach(c=>n[c.requirement_id]=(n[c.requirement_id]||0)+1);
+  return {covered:reqs.filter(r=>n[r]),uncovered:reqs.filter(r=>!n[r]),total:reqs.length};
+}
+function describeScope(s){
+  const b=[];
+  for(const k of Object.keys(FIELD)) if(s[k]?.length) b.push(k+"="+s[k].join("/"));
+  for(const k of Object.keys(FIELD)) if(s["exclude_"+k]?.length) b.push("NOT "+k+"="+s["exclude_"+k].join("/"));
+  if(s.grep) b.push("grep~'"+s.grep+"'");
+  if(s.limit>0) b.push("limit="+s.limit);
+  if(s.include_manual) b.push("incl. manual");
+  return b.length?b.join(", "):"everything automatable";
+}
+const PRESETS={
+ smoke:{desc:"P0 happy paths only",priorities:["P0"],types:["functional"]},
+ regression:{desc:"P0+P1 func/neg/boundary",priorities:["P0","P1"],types:["functional","negative","boundary","contract"]},
+ security:{desc:"Security cases only",types:["security"]},
+ accessibility:{desc:"Accessibility-only run",types:["accessibility"]},
+ api:{desc:"API target — no browser",isNew:true,targets:["api"]},
+ ui:{desc:"UI target — browser flows",isNew:true,targets:["ui"]},
+ everything:{desc:"All automatable cases"},
+};
+let savedScopes={
+ "ci-gate":{priorities:["P0"],types:["functional"],limit:15},
+ "payments-deep":{requirements:["REQ-2","REQ-3"],exclude_types:["accessibility"],grep:"reset|rate"},
+};
+let mode="regression";
+const chipState={};
+function buildChips(){
+  const dims={"ch-prio":"priority","ch-type":"type","ch-tgt":"target","ch-req":"requirement_id"};
+  for(const [box,field] of Object.entries(dims)){
+    const vals=[...new Set(CASES.map(c=>c[field]))].sort();
+    chipState[box]=new Set(vals);
+    const el=$(box); el.innerHTML="";
+    vals.forEach(v=>{
+      const b=document.createElement("button"); b.type="button"; b.className="chip on"; b.textContent=v;
+      b.onclick=()=>{ chipState[box].has(v)?chipState[box].delete(v):chipState[box].add(v);
+        b.classList.toggle("on"); renderScope(); };
+      el.appendChild(b);
+    });
+  }
+}
+function customScope(){
+  const s={priorities:[...chipState["ch-prio"]],types:[...chipState["ch-type"]],
+           targets:[...chipState["ch-tgt"]],requirements:[...chipState["ch-req"]]};
+  const g=$("grep").value.trim(); if(g) s.grep=g;
+  const l=parseInt($("limit").value)||0; if(l>0) s.limit=l;
+  if($("manual").checked) s.include_manual=true;
+  return s;
+}
+function currentScope(){
+  if(mode==="custom") return customScope();
+  if(mode.startsWith("saved:")) return savedScopes[mode.slice(6)]||{};
+  const {desc,isNew,...s}=PRESETS[mode]; return s;
+}
+function renderPresets(){
+  const box=$("presets"); box.innerHTML="";
+  for(const key of [...Object.keys(PRESETS),"custom"]){
+    const b=document.createElement("button"); b.type="button";
+    b.className="preset"+(mode===key?" active":"");
+    let count="—",desc="Pick filters below";
+    if(key!=="custom"){ const {desc:d,isNew,...s}=PRESETS[key];
+      count=applyScope(live(),s).length+" cases"; desc=d; }
+    b.innerHTML=`<div class="name">${key[0].toUpperCase()+key.slice(1)}${PRESETS[key]?.isNew?' <span class="new">new</span>':""}</div>
+      <div class="count">${count}</div><div class="desc">${desc}</div>`;
+    b.onclick=()=>{ mode=key; if(key!=="custom") $("savedsel").value="—"; renderScope(); };
+    box.appendChild(b);
+  }
+}
+function renderSaved(){
+  const sel=$("savedsel"); const cur=sel.value||"—"; sel.innerHTML="";
+  const opt=(v,t)=>{const o=document.createElement("option");o.value=v;o.textContent=t;sel.appendChild(o);};
+  opt("—","— pick a saved scope —");
+  for(const [n,s] of Object.entries(savedScopes)) opt(n,`${n} — ${describeScope(s)}`);
+  sel.value=[...sel.options].some(o=>o.value===cur)?cur:"—";
+}
+$("savedsel").onchange=e=>{ if(e.target.value!=="—") mode="saved:"+e.target.value; renderScope(); };
+["grep","limit"].forEach(id=>$(id).oninput=()=>renderScope());
+$("manual").onchange=()=>renderScope();
+$("scopename").oninput=e=>{ $("savebtn").disabled=!e.target.value.trim(); };
+$("savebtn").onclick=()=>{
+  const n=$("scopename").value.trim(); if(!n) return;
+  savedScopes[n]=customScope(); renderSaved();
+  toast("t4",`Scope '${n}' saved to scopes.yaml`);
+};
+let lastSelected=[], lastCount=null;
+function renderScope(){
+  renderPresets();
+  $("filters").hidden=mode!=="custom";
+  const scope=currentScope();
+  lastSelected=applyScope(live(),scope);
+  const cov=coverage(live(),lastSelected);
+  if(lastCount!==null && lastCount!==lastSelected.length && !reduceMotion){
+    const band=$("sumband"); band.classList.remove("pulse"); void band.offsetWidth; band.classList.add("pulse");
+  }
+  lastCount=lastSelected.length;
+  $("sumcount").textContent=`${lastSelected.length} cases will be automated (${cov.covered.length}/${cov.total} requirements covered)`;
+  $("sumdesc").textContent=describeScope(scope);
+  $("warn").hidden=!cov.uncovered.length;
+  if(cov.uncovered.length)
+    $("warn").textContent=`No cases selected for requirement(s): ${cov.uncovered.join(", ")} — widen the scope if unintended.`;
+  $("gentests").disabled=!lastSelected.length;
+}
+
+// ── §5: generated suite ──────────────────────────────────────────
+const esc=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;");
+function specFor(cases,fixture){
+  return cases.map(c=>
+`  <span class="c-k">test</span>(<span class="c-s">'${c.id}: ${esc(c.title)} @${c.id} @${c.priority} @${c.type}'</span>, <span class="c-k">async</span> ({ ${fixture} }) => {
+    <span class="c-cm">// generated from ${c.requirement_id} — steps + expected assertion</span>
+  });`).join("\n\n");
+}
+function buildSuite(){
+  const uiCases=lastSelected.filter(c=>c.target==="ui");
+  const apiCases=lastSelected.filter(c=>c.target==="api");
+  const files={};
+  files["playwright.config.ts"]=
+`<span class="c-k">import</span> { defineConfig } <span class="c-k">from</span> <span class="c-s">'@playwright/test'</span>;
+<span class="c-k">import</span> dotenv <span class="c-k">from</span> <span class="c-s">'dotenv'</span>;
+dotenv.config();
+
+<span class="c-k">export default</span> defineConfig({
+  testDir: <span class="c-s">'./tests'</span>,
+  retries: process.env.CI ? <span class="c-s">2</span> : <span class="c-s">0</span>,
+  use: {
+    baseURL: process.env.BASE_URL,
+    trace: <span class="c-s">'on-first-retry'</span>,
+  },
+});`;
+  files["tests/pages/LoginPage.ts"]=
+`<span class="c-k">import</span> { Page } <span class="c-k">from</span> <span class="c-s">'@playwright/test'</span>;
+
+<span class="c-k">export class</span> LoginPage {
+  <span class="c-k">constructor</span>(<span class="c-k">private</span> page: Page) {}
+
+  email    = () => <span class="c-k">this</span>.page.getByLabel(<span class="c-s">'Email'</span>);
+  password = () => <span class="c-k">this</span>.page.getByLabel(<span class="c-s">'Password'</span>);
+  submit   = () => <span class="c-k">this</span>.page.getByRole(<span class="c-s">'button'</span>, { name: <span class="c-s">'Sign in'</span> });
+  error    = () => <span class="c-k">this</span>.page.getByRole(<span class="c-s">'alert'</span>);
+
+  <span class="c-k">async</span> login(email: <span class="c-k">string</span>, pass: <span class="c-k">string</span>) {
+    <span class="c-k">await this</span>.email().fill(email);
+    <span class="c-k">await this</span>.password().fill(pass);
+    <span class="c-k">await this</span>.submit().click();
+  }
+}`;
+  if(uiCases.length) files["tests/specs/auth.spec.ts"]=
+`<span class="c-k">import</span> { test, expect } <span class="c-k">from</span> <span class="c-s">'@playwright/test'</span>;
+<span class="c-k">import</span> { LoginPage } <span class="c-k">from</span> <span class="c-s">'../pages/LoginPage'</span>;
+
+<span class="c-cm">// ${uiCases.length} UI tests — generated from the scoped selection</span>
+${specFor(uiCases,"page")}`;
+  if(apiCases.length) files["tests/api/auth.api.spec.ts"]=
+`<span class="c-k">import</span> { test, expect } <span class="c-k">from</span> <span class="c-s">'@playwright/test'</span>;
+
+<span class="c-cm">// ${apiCases.length} API tests — Playwright request fixture, no browser</span>
+${specFor(apiCases,"request")}`;
+  files["AUTOMATION_REPORT.md"]=
+`<span class="c-cm"># Automation report</span>
+Scope: ${esc(describeScope(currentScope()))}
+Selected: ${lastSelected.length} cases (${uiCases.length} UI · ${apiCases.length} API)
+Coverage: ${coverage(live(),lastSelected).covered.length}/${coverage(live(),lastSelected).total} requirements
+Skipped as manual: ${live().filter(c=>!c.automatable).length}`;
+  files[".env.example"]=
+`BASE_URL=<span class="c-s">https://staging.example.com</span>
+TEST_USER=<span class="c-s">qa@example.com</span>
+TEST_PASS=<span class="c-s">change-me</span>`;
+  return files;
+}
+let suiteFiles={}, openFile="";
+function renderTree(){
+  const box=$("ftree"); box.innerHTML="";
+  const names=Object.keys(suiteFiles);
+  const shown=new Set();
+  const addBtn=(label,name,depth,isDir)=>{
+    const b=document.createElement("button"); b.type="button";
+    b.className=isDir?"dir":(name===openFile?"on":"");
+    b.style.paddingLeft=(9+depth*14)+"px";
+    b.textContent=label;
+    if(!isDir) b.onclick=()=>{ openFile=name; renderTree(); $("codeview").innerHTML=suiteFiles[name]; };
+    box.appendChild(b);
+  };
+  names.forEach(n=>{
+    const parts=n.split("/");
+    parts.slice(0,-1).forEach((p,i)=>{
+      const key=parts.slice(0,i+1).join("/");
+      if(!shown.has(key)){ shown.add(key); addBtn(p+"/",key,i,true); }
+    });
+    addBtn(parts[parts.length-1],n,parts.length-1,false);
+  });
+}
+$("gentests").onclick=()=>{
+  $("gentests").disabled=true; $("busy4").hidden=false;
+  setTimeout(()=>{
+    $("busy4").hidden=true; $("gentests").disabled=false;
+    suiteFiles=buildSuite();
+    openFile=Object.keys(suiteFiles).find(f=>f.includes("spec"))||Object.keys(suiteFiles)[0];
+    done[3]=true; done[4]=true; renderStepper();
+    $("lock5").hidden=true; reveal($("suitebody"));
+    $("okband").textContent=`${Object.keys(suiteFiles).length} files generated · ${lastSelected.length} tests from scope "${describeScope(currentScope())}"`;
+    renderTree(); $("codeview").innerHTML=suiteFiles[openFile];
+    $("s5").scrollIntoView({behavior:"smooth"});
+  },1600);
+};
+
+renderStepper();
+</script>

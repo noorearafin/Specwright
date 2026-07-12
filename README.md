@@ -135,6 +135,30 @@ That's the full loop.
 
 ---
 
+## Interactive Prototype
+
+Want to feel the pipeline before installing anything? Open
+[`docs/pipeline_prototype.html`](docs/pipeline_prototype.html) in a browser — no server, no API key,
+no dependencies. It walks all five stages end-to-end with simulated LLM output from the bundled
+login PRD:
+
+1. Load the sample PRD (§1) and generate the IEEE-829 plan (§2)
+2. Watch the two-pass case generation, then edit the 24-case table inline (§3) —
+   priorities cycle on click, and every edit updates the scope counts live
+3. Try the scope gate (§4): presets, saved scopes, requirement/keyword/limit filters,
+   and the requirement-coverage warning
+4. Generate the suite (§5): the Playwright spec files shown are built from your actual selection
+
+The scope filtering in the prototype is a line-for-line JavaScript port of `scope.py`'s
+`apply_scope()`, so what you see is exactly how the real gate behaves.
+
+```bash
+# from a clone:
+open docs/pipeline_prototype.html        # macOS
+start docs\pipeline_prototype.html       # Windows
+xdg-open docs/pipeline_prototype.html    # Linux
+```
+
 ## Screenshots
 
 <!-- Drop real screenshots here. Filenames:
@@ -144,7 +168,7 @@ That's the full loop.
      docs/downloads.png   - one-click download row (6 formats)
 -->
 
-> Screenshots coming soon — run the app to see it live.
+> Screenshots coming soon — run the app (or the prototype above) to see it live.
 
 ---
 
@@ -358,6 +382,8 @@ specwright/
 │   ├── gemini_provider.py
 │   ├── ollama_provider.py
 │   └── anthropic_provider.py
+├── docs/
+│   └── pipeline_prototype.html # Interactive no-install demo of all 5 stages
 ├── examples/
 │   └── login_prd.md            # Sample PRD to try
 ├── requirements.txt

@@ -44,7 +44,7 @@ No paid API required. Runs entirely on free LLMs. Single-user by default.
 - 📦 **10 export formats total**
   - Test plan: Markdown, HTML (styled), **PDF, DOCX**
   - Test cases: CSV, Excel, Jira (Xray), TestRail, HTML, Markdown
-- 🎯 **Interactive scope gate** — smoke / regression / security / accessibility / custom presets
+- 🎯 **Powerful scope gate** — 7 presets (smoke / regression / security / accessibility / api / ui / everything) plus include/exclude filters, keyword regex, per-requirement selection, case caps, saved named scopes (`scopes.yaml`), and requirement-coverage warnings
 - 🎭 **Playwright TypeScript** — Page Object Model, UI + API tests, Dotenv config, ready for CI
 - 🎨 **Polished web UI** — gradient hero, progress stepper, metric cards, priority-tinted tables
 - 🧯 **Collapsed error UI** — problems shown as one-line banners; click to expand full traceback
@@ -135,6 +135,30 @@ That's the full loop.
 
 ---
 
+## Interactive Prototype
+
+Want to feel the pipeline before installing anything? Open
+[`docs/pipeline_prototype.html`](docs/pipeline_prototype.html) in a browser — no server, no API key,
+no dependencies. It walks all five stages end-to-end with simulated LLM output from the bundled
+login PRD:
+
+1. Load the sample PRD (§1) and generate the IEEE-829 plan (§2)
+2. Watch the two-pass case generation, then edit the 24-case table inline (§3) —
+   priorities cycle on click, and every edit updates the scope counts live
+3. Try the scope gate (§4): presets, saved scopes, requirement/keyword/limit filters,
+   and the requirement-coverage warning
+4. Generate the suite (§5): the Playwright spec files shown are built from your actual selection
+
+The scope filtering in the prototype is a line-for-line JavaScript port of `scope.py`'s
+`apply_scope()`, so what you see is exactly how the real gate behaves.
+
+```bash
+# from a clone:
+open docs/pipeline_prototype.html        # macOS
+start docs\pipeline_prototype.html       # Windows
+xdg-open docs/pipeline_prototype.html    # Linux
+```
+
 ## Screenshots
 
 <!-- Drop real screenshots here. Filenames:
@@ -144,7 +168,7 @@ That's the full loop.
      docs/downloads.png   - one-click download row (6 formats)
 -->
 
-> Screenshots coming soon — run the app to see it live.
+> Screenshots coming soon — run the app (or the prototype above) to see it live.
 
 ---
 
@@ -212,7 +236,9 @@ Each case has:
 
 ### Step 4 — Choose automation scope
 
-Visual preset cards with live counts:
+The scope gate decides exactly which cases become Playwright code. Pick a preset card (with live counts), reuse a saved scope, or build a custom filter.
+
+**Built-in presets:**
 
 | Preset            | Includes                                 | Typical use               |
 |-------------------|------------------------------------------|----------------------------|
@@ -220,8 +246,58 @@ Visual preset cards with live counts:
 | **Regression**    | P0 + P1 functional / negative / boundary | Nightly full run           |
 | **Security**      | Security cases only                      | Pre-release security pass  |
 | **Accessibility** | Accessibility cases only                 | Pre-UX review              |
+| **Api**           | API-target cases only                    | Backend-only runs (no browser) |
+| **Ui**            | UI-target cases only                     | Frontend flows             |
 | **Everything**    | All automatable cases                    | Full release suite         |
-| **Custom**        | Filter by priority / type / target       | One-off focused runs       |
+| **Custom**        | Combine any filters below                | One-off focused runs       |
+
+**Custom filter dimensions** (all combinable):
+
+| Filter | Scope key | Example |
+|--------|-----------|---------|
+| Priority | `priorities` | `["P0", "P1"]` |
+| Type | `types` / `exclude_types` | `["functional"]` / drop `["accessibility"]` |
+| Target | `targets` / `exclude_targets` | `["api"]` |
+| Requirement | `requirements` / `exclude_requirements` | `["REQ-2", "REQ-3"]` — automate one feature at a time |
+| Case ID | `ids` / `exclude_ids` | `["TC-001", "TC-007"]` — cherry-pick exact cases |
+| Keyword | `grep` | `"login\|password"` — regex over title, steps, expected |
+| Cap | `limit` | `10` — keeps highest-priority cases first |
+| Manual cases | `include_manual` | `true` — also select `automatable: false` cases |
+
+**Coverage guard:** after every selection, Specwright shows a per-requirement coverage report and warns if your filter silently dropped *all* cases for some requirement (e.g. `⚠ No cases selected for: REQ-4`) — so a narrow scope never ships an untested requirement by accident.
+
+**Saved scopes (`scopes.yaml`):** any custom filter can be saved under a name and reused later — from the UI ("Save scope" button), the interactive CLI gate, or `--save-scope`. Saved scopes appear alongside the presets in both the UI dropdown and the CLI menu. The file is plain YAML you can commit and share with your team:
+
+```yaml
+ci-gate:
+  priorities: [P0]
+  types: [functional]
+  limit: 15
+payments-deep:
+  requirements: [REQ-2, REQ-3]
+  exclude_types: [accessibility]
+  grep: payment|refund
+```
+
+**CLI scoping (non-interactive, perfect for CI):** any scope flag skips the interactive prompt:
+
+```bash
+# Preset by name (built-in or saved from scopes.yaml)
+python qa_agent.py prd.md out/ --scope smoke
+python qa_agent.py prd.md out/ --scope ci-gate
+
+# Compose filters freely — flags refine the preset
+python qa_agent.py prd.md out/ --scope regression --exclude-types accessibility
+python qa_agent.py prd.md out/ --priorities P0 P1 --targets api --grep login
+python qa_agent.py prd.md out/ --requirements REQ-2 REQ-3 --limit 10
+python qa_agent.py prd.md out/ --ids TC-001 TC-007 TC-012
+
+# Save the composed scope for next time, or list what's available
+python qa_agent.py prd.md out/ --scope smoke --grep checkout --save-scope checkout-smoke
+python qa_agent.py --list-scopes
+```
+
+Invalid filter values are caught before generation — typo `P5` and you get `⚠ 'P5' matches no case (known priority values: ['P0','P1','P2'])` instead of an empty suite.
 
 ### Step 5 — Generate & run Playwright tests
 
@@ -296,7 +372,7 @@ specwright/
 ├── qa_agent.py                 # CLI entry point (alternative)
 ├── stages.py                   # Stage 1/2/3 pipeline (two-pass Stage 2)
 ├── exporters.py                # 10 export formats (6 cases + 4 plans)
-├── scope.py                    # Scope presets + filter
+├── scope.py                    # Scope presets, filters, saved scopes, coverage
 ├── prompts.py                  # LLM system prompts
 ├── config.py                   # Config loader
 ├── config.example.yaml         # Sample config (Groq default)
@@ -306,6 +382,8 @@ specwright/
 │   ├── gemini_provider.py
 │   ├── ollama_provider.py
 │   └── anthropic_provider.py
+├── docs/
+│   └── pipeline_prototype.html # Interactive no-install demo of all 5 stages
 ├── examples/
 │   └── login_prd.md            # Sample PRD to try
 ├── requirements.txt

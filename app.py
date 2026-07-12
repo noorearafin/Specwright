@@ -21,7 +21,8 @@ import streamlit as st
 
 from providers import get_provider
 from stages import stage1_plan, stage2_cases, stage3_automate
-from scope import PRESETS, apply_scope
+from scope import (PRESETS, apply_scope, coverage_report, describe_scope,
+                   load_saved_scopes, save_scope)
 from exporters import run_exports, export_plan
 
 
@@ -782,6 +783,7 @@ with st.container(border=True):
         cases = st.session_state.cases
 
         st.markdown("**Choose what to automate:**")
+        saved_scopes = load_saved_scopes()
         preset_cols = st.columns(len(PRESETS) + 1)
         preset_keys = list(PRESETS.keys()) + ["custom"]
 
@@ -803,14 +805,26 @@ with st.container(border=True):
                     st.rerun()
                 st.caption(desc)
 
-        if st.session_state.scope_selection == "custom":
+        if saved_scopes:
+            saved_pick = st.selectbox(
+                "💾 Saved scopes (scopes.yaml)",
+                ["—"] + list(saved_scopes),
+                format_func=lambda k: k if k == "—"
+                else f"{k} — {describe_scope(saved_scopes[k])}",
+            )
+            if saved_pick != "—":
+                st.session_state.scope_selection = f"saved:{saved_pick}"
+
+        sel_key = st.session_state.scope_selection
+        if sel_key == "custom":
             st.markdown("**Custom filters:**")
             automatable = [c for c in cases if c.get("automatable", True)]
             all_prios = sorted({c.get("priority", "?") for c in automatable})
             all_types = sorted({c.get("type", "?") for c in automatable})
             all_tgts = sorted({c.get("target", "?") for c in automatable})
+            all_reqs = sorted({c.get("requirement_id", "?") for c in automatable})
 
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4 = st.columns(4)
             with c1:
                 st.session_state.custom_priorities = st.multiselect(
                     "Priorities", all_prios, default=all_prios)
@@ -820,21 +834,61 @@ with st.container(border=True):
             with c3:
                 st.session_state.custom_targets = st.multiselect(
                     "Targets", all_tgts, default=all_tgts)
+            with c4:
+                custom_reqs = st.multiselect(
+                    "Requirements", all_reqs, default=all_reqs)
+
+            c1, c2, c3 = st.columns([2, 1, 1])
+            with c1:
+                custom_grep = st.text_input(
+                    "Keyword / regex", placeholder="e.g. login|password",
+                    help="Matches title, steps and expected result (case-insensitive)")
+            with c2:
+                custom_limit = st.number_input(
+                    "Max cases (0 = no cap)", min_value=0, value=0,
+                    help="Caps the selection, keeping highest-priority cases first")
+            with c3:
+                custom_manual = st.checkbox(
+                    "Include manual cases",
+                    help="Also select cases flagged automatable=false")
 
             scope = {
                 "priorities": st.session_state.custom_priorities,
                 "types": st.session_state.custom_types,
                 "targets": st.session_state.custom_targets,
+                "requirements": custom_reqs,
+                "grep": custom_grep or None,
+                "limit": int(custom_limit) or None,
+                "include_manual": custom_manual or None,
             }
+            scope = {k: v for k, v in scope.items() if v}
+
+            nc1, nc2 = st.columns([2, 1])
+            scope_name = nc1.text_input(
+                "Save as named scope", placeholder="e.g. payments-smoke")
+            if nc2.button("💾 Save scope", disabled=not scope_name,
+                          use_container_width=True):
+                save_scope(scope_name, scope)
+                st.toast(f"Scope '{scope_name}' saved to scopes.yaml", icon="💾")
+                st.rerun()
+        elif sel_key.startswith("saved:"):
+            scope = saved_scopes.get(sel_key[6:], {})
         else:
-            scope = {k: v for k, v in PRESETS[st.session_state.scope_selection].items()
+            scope = {k: v for k, v in PRESETS[sel_key].items()
                      if k != "description"}
 
         selected = apply_scope(cases, scope)
+        cov = coverage_report(cases, selected)
 
         st.divider()
+        if cov["uncovered"]:
+            st.warning(
+                f"⚠ No cases selected for requirement(s): "
+                f"{', '.join(cov['uncovered'])} — widen the scope if unintended.")
         c1, c2 = st.columns([3, 1])
-        c1.info(f"**{len(selected)} cases** will be automated.")
+        c1.info(f"**{len(selected)} cases** will be automated "
+                f"({len(cov['covered'])}/{cov['total_requirements']} requirements covered) "
+                f"· {describe_scope(scope)}")
         with c2:
             if st.button("▶ Generate tests", type="primary",
                          disabled=not selected, use_container_width=True):

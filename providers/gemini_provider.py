@@ -54,7 +54,20 @@ class GeminiProvider(LLMProvider):
                 resp = self._client.models.generate_content(
                     model=self.model, contents=user, config=cfg,
                 )
-                return resp.text or ""
+                if resp.text:
+                    return resp.text
+                # Empty response: the SDK returns text=None when the prompt
+                # was blocked or no candidate produced parts. Surface why
+                # instead of handing '' downstream (→ JSON parse errors).
+                feedback = getattr(resp, "prompt_feedback", None)
+                block = getattr(feedback, "block_reason", None)
+                candidates = getattr(resp, "candidates", None) or []
+                finish = getattr(candidates[0], "finish_reason", None) if candidates else None
+                raise RuntimeError(
+                    f"Gemini returned no text (block_reason={block}, "
+                    f"finish_reason={finish}). The prompt was likely blocked "
+                    f"or the output was cut off before any text."
+                )
             except Exception as e:  # noqa: BLE001
                 msg = str(e).lower()
                 if "rate" in msg or "quota" in msg or "429" in msg:

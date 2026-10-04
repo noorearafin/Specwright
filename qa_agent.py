@@ -12,6 +12,23 @@ Usage:
     python qa_agent.py prd.md out/ --scope smoke --save-scope ci-gate
     python qa_agent.py prd.md out/ --list-scopes
 
+    # Verify gate (compile generated code, one repair round, exit 1 on failure).
+    # Defaults to on when $CI is set, off otherwise:
+    python qa_agent.py prd.md out/ --scope smoke --check
+    python qa_agent.py prd.md out/ --scope smoke --no-check
+
+    # Regeneration mode (default 'changed' uses .specwright/manifest.json to
+    # rewrite only files whose cases changed; 'all' overwrites everything):
+    python qa_agent.py prd.md out/ --scope smoke --regen all
+
+    # Push cases straight into Jira, upserting by specwright-<TC-ID> label
+    # (config 'jira' block + JIRA_EMAIL/JIRA_TOKEN env vars):
+    python qa_agent.py prd.md out/ --push-jira
+
+    # Execute the generated suite and roll results up per requirement
+    # (exit 1 when any test fails):
+    python qa_agent.py prd.md out/ --scope smoke --run --base-url http://localhost:3000
+
 Config chooses the LLM provider (gemini, groq, ollama, anthropic) and optional
 export formats. Between stages 2 and 3, a scope gate decides which cases to
 automate — interactively, via --scope <preset|saved-name>, or via filter flags.
@@ -21,16 +38,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from collections import Counter
 from pathlib import Path
 
 from config import load_config
 from providers import get_provider
+from schema import validate_cases
 from stages import stage1_plan, stage2_cases, stage3_automate
 from scope import (PRESETS, prompt_scope, apply_scope, resolve_scope,
                    validate_scope, describe_scope, coverage_report,
                    load_saved_scopes, save_scope)
 from exporters import run_exports
+from runner import run_suite
 
 
 def main():
@@ -42,6 +63,35 @@ def main():
     ap.add_argument("--skip-stage", action="append", choices=["1", "2", "3"], default=[])
     ap.add_argument("--non-interactive", action="store_true",
                     help="Skip scope gate (use everything automatable)")
+    ap.add_argument("--strict", action="store_true",
+                    help="Exit 2 if any requirement generated zero cases or "
+                         "the scope selects nothing (for CI gates)")
+    ap.add_argument("--summary-json", metavar="PATH",
+                    help="Write a machine-readable run summary (per-stage "
+                         "counts, coverage, selection, exit status) to PATH")
+    ap.add_argument("--check", action=argparse.BooleanOptionalAction,
+                    default=None,
+                    help="Verify generated code compiles (npm install, tsc, "
+                         "playwright --list) with one LLM repair round; exit 1 "
+                         "if files still fail. Default: on when $CI is set")
+    ap.add_argument("--run", action="store_true",
+                    help="Execute the generated suite (npx playwright test) "
+                         "after Stage 3, print a per-requirement pass/fail "
+                         "table and exit 1 on test failures")
+    ap.add_argument("--base-url", metavar="URL",
+                    help="BASE_URL env var for --run (UI tests)")
+    ap.add_argument("--api-url", metavar="URL",
+                    help="API_URL env var for --run (API tests)")
+    ap.add_argument("--push-jira", action="store_true",
+                    help="After exports, upsert every case into Jira as one "
+                         "issue each (config 'jira' block for base_url/"
+                         "project_key, credentials via JIRA_EMAIL/JIRA_TOKEN)")
+    ap.add_argument("--regen", choices=["all", "changed"], default="changed",
+                    help="How Stage 3 treats existing generated files: "
+                         "'changed' (default) regenerates only files whose "
+                         "producing cases changed since the manifest was "
+                         "written (hand-edited files get a .new sibling); "
+                         "'all' overwrites every selected file")
 
     sc = ap.add_argument_group("scope filters (any of these skips the interactive gate)")
     sc.add_argument("--scope", metavar="NAME",
@@ -94,6 +144,7 @@ def main():
     print(f"▶ LLM provider: {cfg['llm']['provider']} / {cfg['llm'].get('model', '<default>')}\n")
 
     requirements = req_path.read_text()
+    summary: dict = {"stages": {}}
 
     # Stage 1 — Test Plan
     plan_path = project_root / "test_plan.md"
@@ -102,25 +153,65 @@ def main():
         print(f"▶ Stage 1: SKIPPED (using existing {plan_path.name})\n")
     else:
         plan = stage1_plan(llm, requirements, project_root)
+    summary["stages"]["plan"] = {"chars": len(plan)}
 
     # Stage 2 — Test Cases
     cases_path = project_root / "test_cases.json"
     if "2" in args.skip_stage and cases_path.exists():
-        cases = json.loads(cases_path.read_text())
+        # Re-validate on load: the file may have been hand-edited since it
+        # was written, and exporters/Stage 3 assume schema-complete cases.
+        cases = validate_cases(json.loads(cases_path.read_text()))
         print(f"▶ Stage 2: SKIPPED (using existing {cases_path.name})\n")
     else:
         cases = stage2_cases(llm, requirements, plan, project_root)
+    summary["stages"]["cases"] = {
+        "total": len(cases),
+        "by_requirement": dict(Counter(c.get("requirement_id", "?") for c in cases)),
+    }
+
+    # Coverage integrity: did any requirement end up with zero cases?
+    report_path = project_root / "generation_report.json"
+    gen_report = json.loads(report_path.read_text()) if report_path.exists() else {}
+    summary["generation_report"] = gen_report
+    empty_reqs = sorted(r for r, e in gen_report.items() if not e.get("generated"))
+    if empty_reqs:
+        print(f"  ⚠ Requirements with ZERO generated cases: {', '.join(empty_reqs)}")
+        if args.strict:
+            print("✗ --strict: some requirements have no cases.", file=sys.stderr)
+            _write_summary(args.summary_json, summary, 2)
+            sys.exit(2)
 
     # Export in all configured formats
     if cfg.get("exports"):
         run_exports(cases, project_root, cfg["exports"])
 
+    # Direct Jira push — upsert each case, then persist the returned keys
+    if args.push_jira:
+        try:
+            from integrations.jira_push import push_cases, JiraPushError
+        except ImportError as e:
+            sys.exit(f"✗ --push-jira needs the requests package "
+                     f"(pip install requests): {e}")
+        try:
+            result = push_cases(cases, cfg.get("jira") or {})
+        except JiraPushError as e:
+            print(f"✗ Jira push failed: {e}", file=sys.stderr)
+            _write_summary(args.summary_json, summary, 1)
+            sys.exit(1)
+        cases_path.write_text(json.dumps(cases, indent=2))
+        summary["jira_push"] = {"created": result["created"],
+                                "updated": result["updated"]}
+        print(f"▶ Jira push: {result['created']} created, "
+              f"{result['updated']} updated\n")
+
     # Stage 3 — Scope gate → Automation
     if "3" in args.skip_stage:
         print("▶ Stage 3: SKIPPED")
+        _write_summary(args.summary_json, summary, 0)
         return
 
     scope = _build_scope_from_flags(args)
+    scope_from_cli = scope is not None or args.non_interactive
     if scope is not None:
         print(f"▶ Scope (from flags): {describe_scope(scope)}\n")
         for w in validate_scope(cases, scope):
@@ -137,16 +228,95 @@ def main():
 
     selected = apply_scope(cases, scope)
     cov = coverage_report(cases, selected)
+    summary["scope"] = describe_scope(scope)
+    summary["coverage"] = cov
+    summary["selected"] = {"count": len(selected),
+                           "ids": [c.get("id") for c in selected]}
     print(f"▶ Selected {len(selected)} cases — "
           f"{len(cov['covered'])}/{cov['total_requirements']} requirements covered.")
     if cov["uncovered"]:
         print(f"  ⚠ No cases selected for: {', '.join(cov['uncovered'])}")
     if not selected:
-        print("No cases matched the scope filter. Nothing to automate.")
+        msg = "No cases matched the scope filter. Nothing to automate."
+        if scope_from_cli or args.strict:
+            # Unattended run (flags / --non-interactive / --strict): fail
+            # loudly so a CI job with an empty selection goes red, not green.
+            print(f"✗ {msg}", file=sys.stderr)
+            _write_summary(args.summary_json, summary, 2)
+            sys.exit(2)
+        print(msg)
+        _write_summary(args.summary_json, summary, 0)
         return
 
-    stage3_automate(llm, selected, project_root)
+    # Verify gate: explicit flag wins, otherwise on in CI, off locally
+    check = args.check if args.check is not None else bool(os.environ.get("CI"))
+    files = stage3_automate(llm, selected, project_root, all_cases=cases,
+                            check=check, regen=args.regen)
+    summary["stages"]["automation"] = {"files_written": len(files), "files": files}
+
+    if check:
+        verify_path = project_root / "verify_report.json"
+        verify = (json.loads(verify_path.read_text())
+                  if verify_path.exists() else {"status": "skipped"})
+        summary["verify"] = verify
+        if verify.get("status") == "failed":
+            broken = sorted(verify.get("errors", {}))
+            print(f"✗ Verification failed after repair: "
+                  f"{', '.join(broken) or 'see verify_report.json'}",
+                  file=sys.stderr)
+            _write_summary(args.summary_json, summary, 1)
+            sys.exit(1)
+
+    # Suite execution: run the tests and map results back to TC-IDs
+    if args.run:
+        print("\n▶ Running suite: npx playwright test --reporter=json ...")
+        outcome = run_suite(project_root, base_url=args.base_url,
+                            api_url=args.api_url)
+        summary["run"] = {"status": outcome["status"],
+                          "error": outcome["error"],
+                          "exit_code": outcome["exit_code"],
+                          "aggregate": outcome["aggregate"]}
+        if outcome["status"] == "error":
+            print(f"✗ Suite run failed: {outcome['error']}", file=sys.stderr)
+            _write_summary(args.summary_json, summary, 1)
+            sys.exit(1)
+        _print_run_table(outcome["aggregate"])
+        print(f"▶ Results written to {project_root / 'results.json'}")
+        failed = sum(1 for e in outcome["results"].values()
+                     if e["status"] == "failed")
+        if failed:
+            print(f"✗ {failed} test case(s) failed.", file=sys.stderr)
+            _write_summary(args.summary_json, summary, 1)
+            sys.exit(1)
+
+    _write_summary(args.summary_json, summary, 0)
     print("\n✅ Done.")
+
+
+def _print_run_table(aggregate: dict) -> None:
+    """Per-requirement pass/fail table for --run."""
+    if not aggregate:
+        print("  (no TC-IDs found in test titles — nothing to map)")
+        return
+    header = (f"  {'Requirement':<14}{'Passed':>8}{'Failed':>8}"
+              f"{'Skipped':>9}{'Not run':>9}  Status")
+    print(header)
+    print("  " + "─" * (len(header) - 2))
+    for req in sorted(aggregate):
+        e = aggregate[req]
+        mark = {"passed": "✓ PASS", "failed": "✗ FAIL",
+                "skipped": "– SKIP"}.get(e["status"], "· NOT RUN")
+        print(f"  {req:<14}{e['passed']:>8}{e['failed']:>8}"
+              f"{e['skipped']:>9}{e['not_run']:>9}  {mark}")
+
+
+def _write_summary(path: str | None, summary: dict, exit_status: int) -> None:
+    """Dump the run summary with its final exit status. No-op without
+    ``--summary-json``."""
+    if not path:
+        return
+    summary["exit_status"] = exit_status
+    Path(path).write_text(json.dumps(summary, indent=2))
 
 
 def _build_scope_from_flags(args) -> dict | None:

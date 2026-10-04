@@ -35,6 +35,15 @@ llm:
 #   api_key: ${ANTHROPIC_API_KEY}
 #   temperature: 0.2
 
+# ── Jira push (optional — qa_agent.py --push-jira / UI "Push to Jira") ──────
+# Upserts one issue per case, keyed by a specwright-<TC-ID> label.
+# jira:
+#   base_url: https://yourteam.atlassian.net
+#   project_key: QA
+#   issue_type: Test                 # issue type name in your project
+#   email: ${JIRA_EMAIL}             # env var substitution
+#   api_token: ${JIRA_TOKEN}
+
 # ── Export formats (after Stage 2) ──────────────────────────────────────────
 exports:
   - csv            # flat CSV
@@ -43,3 +52,4 @@ exports:
   - testrail       # TestRail CSV import format
   - html           # self-contained human-readable report
   - markdown       # MD table + detail sections
+  - rtm            # requirement traceability matrix CSV

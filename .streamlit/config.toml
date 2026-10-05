@@ -1,0 +1,7 @@
+# Specwright theme — matches the hero gradient palette (#667eea → #764ba2)
+[theme]
+primaryColor = "#7c3aed"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f6f5fc"
+textColor = "#1f2937"
+font = "sans serif"

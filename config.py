@@ -12,7 +12,7 @@ DEFAULT_CONFIG = {
         "model": "gemini-2.5-flash",
         # api_key read from env (GEMINI_API_KEY / GROQ_API_KEY / ANTHROPIC_API_KEY)
     },
-    "exports": ["csv", "excel", "jira", "testrail", "html", "markdown"],
+    "exports": ["csv", "excel", "jira", "testrail", "html", "markdown", "rtm"],
 }
 
 
@@ -41,5 +41,13 @@ def load_config(path: str) -> dict:
     if isinstance(api_key, str) and api_key.startswith("${") and api_key.endswith("}"):
         env_name = api_key[2:-1]
         merged["llm"]["api_key"] = os.environ.get(env_name, "")
+
+    # Same ${ENV_VAR} substitution across the optional jira block
+    # (email/api_token usually point at JIRA_EMAIL / JIRA_TOKEN)
+    jira = merged.get("jira")
+    if isinstance(jira, dict):
+        for key, val in jira.items():
+            if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
+                jira[key] = os.environ.get(val[2:-1], "")
 
     return merged

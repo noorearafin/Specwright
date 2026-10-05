@@ -28,12 +28,26 @@ class LLMProvider(ABC):
 
     def complete_json(self, system: str, user: str, max_tokens: int = 16000,
                       temperature: float = 0.1):
-        """Call complete() and parse JSON. Strips markdown fences if present."""
+        """Call complete() and parse JSON. Strips markdown fences if present.
+
+        If parsing fails, retries ONCE with a corrective instruction appended
+        to the prompt before letting the error propagate."""
         # Clamp to the provider's real capacity so we never ask for more than
         # it can return (silent truncation → JSON parse errors).
         safe_max = min(max_tokens, self.max_output_tokens)
         raw = self.complete(system, user, max_tokens=safe_max, temperature=temperature)
-        return _parse_json(raw)
+        try:
+            return _parse_json(raw)
+        except ValueError:
+            corrective = (
+                f"{user}\n\n"
+                "Previous response was not valid JSON. Respond again with "
+                "ONLY valid JSON — no prose, no markdown fences, no "
+                "trailing commentary."
+            )
+            raw = self.complete(system, corrective, max_tokens=safe_max,
+                                temperature=temperature)
+            return _parse_json(raw)
 
 
 def _parse_json(raw: str):

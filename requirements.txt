@@ -3,11 +3,15 @@ streamlit>=1.30.0
 pandas>=2.0.0
 pyyaml>=6.0
 openpyxl>=3.1.0
+requests>=2.31      # direct Jira push
 
 # Test plan export formats
 markdown>=3.5.0       # MD → HTML
 reportlab>=4.0.0      # PDF
 python-docx>=1.1.0    # DOCX
+
+# Dev / running the test suite
+pytest>=8.0
 
 # LLM providers — install the one you'll use
 groq>=0.4.0              # DEFAULT (free, fast)

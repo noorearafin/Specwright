@@ -14,7 +14,7 @@
 
 <p align="center">
   PRD / SRS / BRD → IEEE-829 Test Plan → AI-sized Test Cases → Playwright TypeScript suite —
-  with a <em>polished web UI</em>, inline editing, and six export formats.
+  with a <em>polished web UI</em>, inline editing, one-click test runs, and eleven export formats.
 </p>
 
 ---
@@ -26,9 +26,11 @@ Writing test plans and cases from requirements is the most mechanical part of QA
 - **Reads** your PRD/SRS/BRD in plain English
 - **Writes** a full IEEE-829 test plan you can edit and sign off on
 - **Figures out** how many test cases each requirement needs — no hardcoded "always 20" heuristic
-- **Exports** plans to PDF / DOCX / HTML / Markdown, cases to CSV / Excel / Jira / TestRail / HTML / Markdown
-- **Lets you edit** cases inline with auto re-export to all six formats
+- **Exports** plans to PDF / DOCX / HTML / Markdown, cases to CSV / Excel / Jira / TestRail / HTML / Markdown / RTM
+- **Lets you edit** cases inline with auto re-export to all seven formats
 - **Generates** a production-grade Playwright TypeScript suite with Page Object Model
+- **Verifies** the generated code compiles (`tsc` + `playwright --list`) with one automatic repair round
+- **Runs** the suite and rolls every result up per requirement — in the UI or in CI
 
 No paid API required. Runs entirely on free LLMs. Single-user by default.
 
@@ -41,11 +43,22 @@ No paid API required. Runs entirely on free LLMs. Single-user by default.
 - 🧩 **Chunked generation** — Stage 2 automatically splits into per-requirement calls when the provider's output cap would cause JSON truncation
 - 📝 **IEEE-829 test plans** — scope, objectives, approach, environments, risks, exit criteria — in 10 sections
 - ✏️ **Editable cases** — every cell editable inline; changes auto-save and re-export to all formats
-- 📦 **10 export formats total**
+- 📦 **11 export formats total**
   - Test plan: Markdown, HTML (styled), **PDF, DOCX**
-  - Test cases: CSV, Excel, Jira (Xray), TestRail, HTML, Markdown
+  - Test cases: CSV, Excel, Jira (Xray), TestRail, HTML, Markdown, **RTM**
+- 🛡 **Schema-validated cases** — Stage 2 output is coerced into a strict case schema (types, targets, priorities, step shape), so LLM near-misses never crash the scope gate, exporters or Stage 3
+- 📊 **Coverage integrity** — `generation_report.json` compares the Pass-1 estimate against what Pass 2 actually produced; zero-case requirements are flagged in the UI (with one-click targeted regeneration) and fail CI under `--strict`
+- 🧭 **RTM export** — requirement traceability matrix (`test_rtm.csv` + an always-visible UI table) with per-requirement case counts, priority/automation split, coverage-gap rows, and last-run status
 - 🎯 **Powerful scope gate** — 7 presets (smoke / regression / security / accessibility / api / ui / everything) plus include/exclude filters, keyword regex, per-requirement selection, case caps, saved named scopes (`scopes.yaml`), and requirement-coverage warnings
 - 🎭 **Playwright TypeScript** — Page Object Model, UI + API tests, Dotenv config, ready for CI
+- 🔐 **Auth scaffolding** — new projects log in once (`auth.setup.ts`), persist the session as Playwright `storageState`, and hand specs a pre-authenticated fixture
+- ✅ **Compile-verify gate** — generated code is compiled (`npm install` → `tsc --noEmit` → `playwright test --list`) with one automatic LLM repair round; files that still fail are reported, never shipped silently
+- 🧬 **Regeneration manifest** — `.specwright/manifest.json` records what produced each generated file, so re-runs rewrite only files whose cases changed and write `.new` siblings instead of clobbering hand-edits
+- 🏁 **In-UI / CLI test execution** — run the suite from Stage ⑥ or with `--run`; results map back to TC-IDs with per-case chips, failure details, and a per-requirement pass/fail roll-up
+- 📁 **Named projects** — every PRD, plan, case set and suite persists under `./projects/<name>`; switch projects in the sidebar and resume exactly where you left off
+- 🪜 **Steps editor** — a per-case editor for steps and preconditions, beyond the inline table
+- 🚀 **Jira direct push** — one issue per case, upserted by a `specwright-<TC-ID>` label, so re-pushes update instead of duplicating
+- 🧪 **Tested core** — pytest suite covering scope, schema, exporters, runner, verify gate, manifest and Jira push
 - 🎨 **Polished web UI** — gradient hero, progress stepper, metric cards, priority-tinted tables
 - 🧯 **Collapsed error UI** — problems shown as one-line banners; click to expand full traceback
 - 🔒 **Safe by design** — path traversal blocked, no overwrite without consent, rate-limit auto-retry
@@ -66,9 +79,9 @@ No paid API required. Runs entirely on free LLMs. Single-user by default.
          ▼
    ┌─────────────┐     Pass 1: LLM decides cases per requirement
    │ Stage 2     │     Pass 2: Generates (chunked if needed)
-   │ Case Writer │  →  test_cases.json  +  6 export formats
-   └─────┬───────┘         (editable inline, auto re-exports)
-         ▼
+   │ Case Writer │  →  test_cases.json  +  7 export formats
+   └─────┬───────┘     + generation_report.json (coverage integrity)
+         ▼                 (editable inline, auto re-exports)
    ┌─────────────┐
    │ Scope Gate  │  ←  Smoke / Regression / Security / Custom
    └─────┬───────┘
@@ -76,7 +89,16 @@ No paid API required. Runs entirely on free LLMs. Single-user by default.
    ┌─────────────┐
    │ Stage 3     │  →  tests/pages/*.ts + tests/specs/*.ts
    │ Automator   │     + tests/api/*.ts + playwright.config.ts
-   └─────────────┘
+   └─────┬───────┘     (manifest-aware: only rewrites what changed)
+         ▼
+   ┌─────────────┐     npm install → tsc --noEmit → playwright --list
+   │ Verify gate │  →  verify_report.json — one LLM repair round,
+   │ (--check)   │     broken files flagged "needs manual fix"
+   └─────┬───────┘
+         ▼
+   ┌─────────────┐     npx playwright test --reporter=json
+   │ Run (--run) │  →  results.json — per-case status mapped to
+   └─────────────┘     TC-IDs + per-requirement pass/fail roll-up
 ```
 
 ---
@@ -130,6 +152,7 @@ Opens at `http://localhost:8501`. No browser? Click the link Streamlit prints.
 4. Pick a scope preset (e.g. **Regression**)
 5. Click **▶ Generate tests** — Playwright TypeScript files produced
 6. Click **⬇ Download full project (.zip)**
+7. (Optional) Enter your app's URL in **⑥ Run & Results** and click **▶ Run suite** — results map back to each requirement
 
 That's the full loop.
 
@@ -165,7 +188,7 @@ xdg-open docs/pipeline_prototype.html    # Linux
      docs/hero.png        - hero + stepper at the top of the app
      docs/cases.png       - editable test cases table
      docs/scope.png       - scope preset cards with live counts
-     docs/downloads.png   - one-click download row (6 formats)
+     docs/downloads.png   - one-click download row (7 formats + Jira push)
 -->
 
 > Screenshots coming soon — run the app (or the prototype above) to see it live.
@@ -232,7 +255,9 @@ Each case has:
 }
 ```
 
-**Review gate #2:** the table is editable inline. Change priorities, types, titles, automation flags, or remove rows entirely. **Every edit auto re-exports all 6 formats** — CSV, Excel, Jira, TestRail, HTML, Markdown — so your downloads always reflect the latest state.
+**Review gate #2:** the table is editable inline. Change priorities, types, titles, automation flags, or remove rows entirely. **Every edit auto re-exports all 7 formats** — CSV, Excel, Jira, TestRail, HTML, Markdown, RTM — so your downloads always reflect the latest state. Steps and preconditions have their own editor: expand **✏️ Edit TC-xxx** under the table to add, reorder or reword individual steps, with the same auto-save and re-export.
+
+**Coverage integrity:** Stage 2 also writes `generation_report.json`, comparing the Pass-1 estimate against what Pass 2 actually produced. Requirements that ended up with **zero cases** (e.g. a chunk that failed all retries) are flagged in a banner with a **🔁 Regenerate missing** button that re-runs Pass 2 for just those requirements and merges the results in. The same report drives the always-visible **Requirement coverage (RTM)** table — per-requirement case counts, P0/P1/P2 split, automatable vs manual, and `⚠ GAP` rows for uncovered requirements — and the `test_rtm.csv` export.
 
 ### Step 4 — Choose automation scope
 
@@ -314,8 +339,14 @@ your-project/
     ├── pages/           ← Page Object Model classes
     ├── specs/           ← UI tests (use { page })
     ├── api/             ← API tests (Playwright request fixture)
-    └── fixtures/        ← shared test fixtures
+    └── fixtures/        ← auth.setup.ts + pre-authenticated test fixture
 ```
+
+**Logged-in by default:** the scaffold includes `tests/fixtures/auth.setup.ts`, a setup project that logs in once with `TEST_USER` / `TEST_PASS` and saves the session to `playwright/.auth/user.json`. The browser projects reuse it via Playwright `storageState`, so specs start authenticated instead of repeating the login flow per test — adjust the setup's locators to your app's real login form (login/auth specs still exercise the real flow).
+
+**Compile check:** when the verify gate ran (always available via CLI `--check`, and surfaced in the UI as a badge on Stage ⑤), the generated code has been compiled — `npm install` → `tsc --noEmit` → `playwright test --list` — and each broken file got **one automatic LLM repair pass**. Files that still fail are listed under *Needs manual fix* in `AUTOMATION_REPORT.md` and `verify_report.json`; a missing Node toolchain shows as *skipped*, not *failed*.
+
+**Safe re-runs:** Stage 3 keeps a regeneration manifest at `.specwright/manifest.json` (hash of each written file + of the cases that produced it). On a re-run, files whose cases are unchanged are skipped; files whose cases changed are regenerated in place — **unless you hand-edited them**, in which case the fresh version lands beside yours as `<name>.new.<ext>` and the conflict is listed in the report. The UI's *overwrite* toggle (CLI: `--regen all`) forces a full rewrite.
 
 Download the ZIP, then:
 
@@ -338,6 +369,89 @@ npx playwright test --grep @security        # security only
 npx playwright test --grep "@P0|@P1"        # regression
 ```
 
+### Step 6 — Running your suite
+
+You don't have to leave Specwright to find out whether the tests pass.
+
+**In the UI (⑥ Run & Results):** enter your app's `BASE_URL` (and `API_URL` for API tests), click **▶ Run suite**. Specwright runs `npx playwright test --reporter=json` against the generated project and maps every result back to the TC-ID in its test title:
+
+- Executed / Passed / Failed / Skipped metric cards
+- Per-case status chips (cases that never ran show as grey "not run")
+- Expandable failure details with the error message per TC-ID
+- A per-requirement roll-up table — joined through `test_cases.json`, so you see *which requirement* is red, not just which spec
+- Downloads: `results.json` (raw mapping + `_aggregate`) and the RTM re-exported with a **Last Run** column
+
+**From the CLI:** add `--run` to execute the suite right after Stage 3 and get the same per-requirement table in your terminal:
+
+```bash
+python qa_agent.py prd.md out/ --scope smoke --run --base-url http://localhost:3000
+python qa_agent.py prd.md out/ --scope regression --run \
+    --base-url https://staging.example.com --api-url https://staging.example.com/api
+```
+
+Exit code is 1 when any test fails, so `--run` doubles as a CI gate. Node.js must be on PATH (the runner reports a clear error otherwise).
+
+### CI & verification flags
+
+The CLI grew a set of flags for unattended runs:
+
+```bash
+# Verify gate: compile the generated code (npm install → tsc --noEmit →
+# playwright test --list) with one LLM repair round; exit 1 if files still
+# fail. Default: ON when $CI is set, OFF locally.
+python qa_agent.py prd.md out/ --scope smoke --check
+python qa_agent.py prd.md out/ --scope smoke --no-check
+
+# Coverage gate: exit 2 if any requirement generated zero cases, or the
+# scope filter selects nothing — an empty selection goes red, not green.
+python qa_agent.py prd.md out/ --scope smoke --strict
+
+# Machine-readable run summary: per-stage counts, coverage report,
+# selection, verify/run outcomes and the final exit status.
+python qa_agent.py prd.md out/ --scope smoke --summary-json summary.json
+
+# Regeneration mode: 'changed' (default) rewrites only files whose cases
+# changed since .specwright/manifest.json was written — hand-edited files
+# get a .new sibling. 'all' overwrites every selected file.
+python qa_agent.py prd.md out/ --scope smoke --regen all
+```
+
+### Jira push
+
+Instead of (or alongside) the Jira CSV export, Specwright can create the issues directly — one per test case, **upserted** by a `specwright-<TC-ID>` label, so pushing twice updates issues rather than duplicating them. The returned issue keys are stamped back into `test_cases.json` under `external_ids.jira`.
+
+Set the credentials as environment variables (they never pass through the UI):
+
+```bash
+export JIRA_EMAIL="you@yourteam.com"
+export JIRA_TOKEN="your-api-token"        # https://id.atlassian.com/manage-profile/security/api-tokens
+```
+
+Add a `jira` block to `config.yaml` (see `config.example.yaml`):
+
+```yaml
+jira:
+  base_url: https://yourteam.atlassian.net
+  project_key: QA
+  issue_type: Test                 # issue type name in your project
+  email: ${JIRA_EMAIL}             # env var substitution
+  api_token: ${JIRA_TOKEN}
+```
+
+Then push from the CLI:
+
+```bash
+python qa_agent.py prd.md out/ --push-jira
+```
+
+…or from the UI: fill in the base URL and project key under the sidebar's **🔗 Jira integration** expander, then click **🚀 Push to Jira** in the Stage ③ download row. Summary, description, priority and labels mirror the Jira CSV export, so both routes land identical content.
+
+### Projects
+
+Everything you generate lives in a **named project** under `./projects/<name>` — PRD, plan, cases, exports, and the Playwright suite. The sidebar's **📁 Project** section switches between projects or creates a new one (names are slugified to lowercase letters, digits and hyphens).
+
+Switching projects — or restarting Streamlit entirely — rehydrates the session from the project's saved files, so you resume exactly where you left off: a saved `test_cases.json` puts you back at the scope gate, a `playwright.config.ts` re-enables the suite and run panels. **↺ Reload project from disk** discards unsaved session state and re-reads the files.
+
 ---
 
 ## Configuration
@@ -358,6 +472,15 @@ exports:
   - testrail
   - html
   - markdown
+  - rtm                             # requirement traceability matrix
+
+# Optional — enables qa_agent.py --push-jira (see "Jira push" above)
+# jira:
+#   base_url: https://yourteam.atlassian.net
+#   project_key: QA
+#   issue_type: Test
+#   email: ${JIRA_EMAIL}
+#   api_token: ${JIRA_TOKEN}
 ```
 
 To switch providers mid-session, just change the sidebar dropdown in the UI — no restart.
@@ -370,9 +493,13 @@ To switch providers mid-session, just change the sidebar dropdown in the UI — 
 specwright/
 ├── app.py                      # Streamlit web UI
 ├── qa_agent.py                 # CLI entry point (alternative)
-├── stages.py                   # Stage 1/2/3 pipeline (two-pass Stage 2)
-├── exporters.py                # 10 export formats (6 cases + 4 plans)
+├── stages.py                   # Stage 1/2/3 pipeline (two-pass Stage 2,
+│                               #   regen manifest + verify gate in Stage 3)
+├── exporters.py                # 11 export formats (7 cases + 4 plans)
 ├── scope.py                    # Scope presets, filters, saved scopes, coverage
+├── schema.py                   # Case schema validation for Stage 2 output
+├── verify.py                   # Compile gate: npm install / tsc / playwright --list
+├── runner.py                   # Suite runner: playwright test → TC-ID results
 ├── prompts.py                  # LLM system prompts
 ├── config.py                   # Config loader
 ├── config.example.yaml         # Sample config (Groq default)
@@ -382,6 +509,20 @@ specwright/
 │   ├── gemini_provider.py
 │   ├── ollama_provider.py
 │   └── anthropic_provider.py
+├── integrations/
+│   └── jira_push.py            # Direct Jira upsert (one issue per case)
+├── tests/                      # pytest suite for the pipeline itself
+│   ├── test_scope.py
+│   ├── test_schema.py
+│   ├── test_exporters_rtm.py
+│   ├── test_stage2_report.py
+│   ├── test_stage3_manifest.py
+│   ├── test_stage3_verify.py
+│   ├── test_runner.py
+│   └── test_jira_push.py
+├── .streamlit/
+│   └── config.toml             # UI theme (matches the hero gradient)
+├── projects/                   # Named project workspaces (created at runtime)
 ├── docs/
 │   └── pipeline_prototype.html # Interactive no-install demo of all 5 stages
 ├── examples/
@@ -391,6 +532,8 @@ specwright/
 ├── LICENSE
 └── PUBLISHING.md               # Guide to pushing to GitHub
 ```
+
+Run the pipeline's own tests with `python3 -m pytest tests/ -q` (needs `pip install pytest`) — no API key or network required, LLM and HTTP calls are stubbed.
 
 ---
 
@@ -409,11 +552,16 @@ The pipeline automatically chunks generation when a provider's output cap would 
 
 ## UI Highlights
 
-- **Gradient hero header** and sidebar-driven config
-- **5-step progress stepper** across the top — completed steps turn green, current step highlighted
+- **Gradient hero header** and sidebar-driven config, themed via `.streamlit/config.toml`
+- **6-step progress stepper** across the top — completed steps turn green, current step highlighted
 - **Metric cards** for case totals, P0 count, UI / API split
+- **Always-visible RTM table** — per-requirement coverage with `⚠ GAP` rows that never hide behind a toast
 - **`st.data_editor` table** — every cell editable, add/delete rows, auto re-exports on change
+- **Per-case steps editor** — expand any case to edit its steps and preconditions row by row
 - **Priority color coding** in the table (P0 red, P1 amber, P2 gray)
+- **Compile-status badge** on the suite — passed / failed (with the broken files) / skipped
+- **Run panel** — per-case result chips, failure details, and a per-requirement summary table
+- **Project switcher** in the sidebar — named workspaces that survive refreshes and restarts
 - **Collapsed errors** — one-line banner with "Details" toggle instead of giant stack traces
 - **Multiple errors accumulate** in tabs for comparison
 
@@ -466,7 +614,6 @@ PRs welcome. Areas where help is wanted:
 - Additional LLM providers (Mistral, Cohere, local Llama.cpp)
 - More export formats (Zephyr, qTest, Azure DevOps)
 - Jira / Confluence direct integration — read requirements from a ticket
-- Test execution + result reporting in the UI
 - Eval harness to measure generated-test quality across providers
 
 Open an issue first to discuss anything bigger than a bug fix.
@@ -476,13 +623,14 @@ Open an issue first to discuss anything bigger than a bug fix.
 ## Roadmap
 
 - [ ] **Jira / Confluence input** — pull requirements straight from a ticket
-- [ ] **In-UI test execution** — run `npx playwright test` and show results
+- [x] **In-UI test execution** — Stage ⑥ runs the suite and maps results back to TC-IDs (CLI: `--run`)
 - [ ] **Eval harness** — benchmark generated test quality across provider / model combinations
-- [ ] **Multi-user mode** — save projects, come back later, share with team
+- [x] **Save projects, come back later** — named projects persist under `./projects/` (single-user)
+- [ ] **Multi-user mode** — share projects with a team; today's persistence is single-user
 - [ ] **Cucumber BDD output** — optional `.feature` file generation
 - [ ] **Cypress output** — alternative to Playwright
 - [ ] **Mobile (Appium / Maestro)** — for mobile app QA
-- [ ] **Jira direct push** — create test issues via API instead of CSV import
+- [x] **Jira direct push** — one issue per case via the REST API, upserted by label (UI button or `--push-jira`); reading tickets back is still open
 
 ---
 
@@ -495,7 +643,7 @@ No. It handles the mechanical parts — plans, cases, boilerplate code — so en
 Groq has proven more stable under load. Gemini 2.5 Flash occasionally returns `503 UNAVAILABLE` during peak hours, whereas Groq typically responds in 1–2 seconds with high availability. Both are free.
 
 **Can I edit cases after generation?**
-Yes. The Stage 3 table is fully editable — change any cell, add rows, delete rows. Every edit triggers auto re-export to all 6 download formats.
+Yes. The Stage 3 table is fully editable — change any cell, add rows, delete rows — and each case's steps and preconditions have their own editor. Every edit triggers auto re-export to all 7 download formats.
 
 **How does the two-pass case generation work?**
 Pass 1 asks the LLM to count how many cases each requirement needs, based on complexity. Pass 2 generates exactly that many cases, chunking per-requirement if the total would exceed the LLM's output cap. The result is complete, parseable JSON every time — no truncation.
@@ -504,7 +652,7 @@ Pass 1 asks the LLM to count how many cases each requirement needs, based on com
 For deeply complex security / crypto / banking features, Claude Sonnet 4.6 produces the most thorough test cases. For everyday web-app features, Groq's Llama 3.3 70B is indistinguishable from paid models. Gemini 2.5 Pro is strong when Groq is over quota.
 
 **Can I read Jira tickets?**
-Not yet — on the roadmap. For now, copy-paste the ticket description into the Paste tab or save it as `.md`.
+Not yet — reading requirements from a ticket is on the roadmap. For now, copy-paste the ticket description into the Paste tab or save it as `.md`. The other direction already works: `--push-jira` (or the UI button) creates one Jira issue per case.
 
 **What about mobile testing?**
 Also on the roadmap. Current output is Playwright for web (UI + API). Mobile via Appium or Maestro is planned.

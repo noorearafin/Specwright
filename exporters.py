@@ -1,17 +1,19 @@
-"""Exporters for test cases. Six formats, all write to the project root.
+"""Exporters for test cases. Seven formats, all write to the project root.
 
 - CSV        → test_cases.csv          (flat, universal)
-- Excel      → test_cases.xlsx         (formatted, with summary sheet)
+- Excel      → test_cases.xlsx         (formatted, with summary + RTM sheets)
 - Jira CSV   → test_cases.jira.csv     (Jira + Xray importable)
 - TestRail   → test_cases.testrail.csv (TestRail CSV importer)
 - HTML       → test_cases.html         (self-contained, styled)
 - Markdown   → test_cases.md           (summary table + per-case detail)
+- RTM        → test_rtm.csv            (requirement traceability matrix)
 """
 
 from __future__ import annotations
 
 import csv
 import html
+import json
 from collections import Counter
 from pathlib import Path
 
@@ -24,6 +26,7 @@ def run_exports(cases: list[dict], out_dir: Path, formats: list[str]) -> None:
         "testrail": export_testrail,
         "html": export_html,
         "markdown": export_markdown,
+        "rtm": export_rtm,
     }
     print("▶ Exporting test cases...")
     for fmt in formats:
@@ -56,6 +59,67 @@ def _fmt_preconditions(pcs: list[str]) -> str:
 
 def _priority_to_jira(p: str) -> str:
     return {"P0": "Highest", "P1": "High", "P2": "Medium"}.get(p, "Medium")
+
+
+def build_rtm_rows(cases: list[dict], out_dir: Path | None = None,
+                   results: dict[str, str] | None = None) -> list[dict]:
+    """One traceability row per requirement_id: case counts, priority split,
+    automation split, case-ID list, and an optional last-run roll-up built
+    from ``results`` ({tc_id: status}).
+
+    When ``out_dir`` contains a generation_report.json, requirements that
+    generated ZERO cases are appended as gap rows (``gap=True``) so every
+    exporter can highlight the coverage hole."""
+    by_req: dict[str, list[dict]] = {}
+    for c in cases:
+        by_req.setdefault(c.get("requirement_id", "?"), []).append(c)
+
+    rows = []
+    for req, group in by_req.items():
+        ids = [c.get("id", "") for c in group]
+        prio = Counter(c.get("priority", "?") for c in group)
+        rows.append({
+            "requirement": req,
+            "total": len(group),
+            "p0": prio.get("P0", 0),
+            "p1": prio.get("P1", 0),
+            "p2": prio.get("P2", 0),
+            "automatable": sum(1 for c in group if c.get("automatable", True)),
+            "manual": sum(1 for c in group if not c.get("automatable", True)),
+            "case_ids": ids,
+            "last_run": _rollup_results(ids, results),
+            "gap": False,
+        })
+
+    # Gap rows: requirements the estimator planned but that produced nothing
+    report_path = (out_dir / "generation_report.json") if out_dir else None
+    if report_path and report_path.exists():
+        try:
+            gen_report = json.loads(report_path.read_text())
+        except json.JSONDecodeError:
+            gen_report = {}
+        for req in sorted(gen_report):
+            if req not in by_req:
+                rows.append({
+                    "requirement": req,
+                    "total": 0, "p0": 0, "p1": 0, "p2": 0,
+                    "automatable": 0, "manual": 0,
+                    "case_ids": [],
+                    "last_run": None,
+                    "gap": True,
+                })
+    return rows
+
+
+def _rollup_results(case_ids: list[str], results: dict[str, str] | None) -> str | None:
+    """'2 passed, 1 failed' summary of the last run for one requirement's
+    cases. None when no results were supplied or none match."""
+    if not results:
+        return None
+    statuses = Counter(results[i] for i in case_ids if i in results)
+    if not statuses:
+        return None
+    return ", ".join(f"{n} {s}" for s, n in statuses.most_common())
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -168,6 +232,35 @@ def export_excel(cases: list[dict], out_dir: Path) -> Path:
     ws2.column_dimensions["A"].width = 24
     ws2.column_dimensions["B"].width = 12
 
+    # Sheet 3: Traceability — one row per requirement, gap rows highlighted
+    ws3 = wb.create_sheet("Traceability")
+    ws3.append(["Requirement", "Coverage", "Total Cases", "P0", "P1", "P2",
+                "Automatable", "Manual", "Case IDs"])
+    for cell in ws3[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(vertical="center")
+
+    gap_fill = PatternFill(start_color="FDEDEC", end_color="FDEDEC", fill_type="solid")
+    gap_font = Font(color="C0392B", bold=True)
+    for r in build_rtm_rows(cases, out_dir):
+        ws3.append([
+            r["requirement"],
+            "GAP" if r["gap"] else "OK",
+            r["total"], r["p0"], r["p1"], r["p2"],
+            r["automatable"], r["manual"],
+            ", ".join(r["case_ids"]),
+        ])
+        if r["gap"]:
+            for cell in ws3[ws3.max_row]:
+                cell.fill = gap_fill
+                cell.font = gap_font
+
+    rtm_widths = [14, 10, 12, 6, 6, 6, 12, 10, 50]
+    for i, w in enumerate(rtm_widths, 1):
+        ws3.column_dimensions[get_column_letter(i)].width = w
+    ws3.freeze_panes = "A2"
+
     wb.save(path)
     return path
 
@@ -184,7 +277,7 @@ def export_jira(cases: list[dict], out_dir: Path) -> Path:
             "Test Type", "Manual Test Steps",
         ])
         for c in cases:
-            desc = _build_jira_description(c)
+            desc = build_jira_description(c)
             labels = " ".join(filter(None, [
                 c.get("type", ""),
                 c.get("target", ""),
@@ -204,7 +297,9 @@ def export_jira(cases: list[dict], out_dir: Path) -> Path:
     return path
 
 
-def _build_jira_description(c: dict) -> str:
+def build_jira_description(c: dict) -> str:
+    """Jira wiki-markup description for one case — shared by the Jira CSV
+    export above and the direct push in integrations/jira_push.py."""
     lines = [
         f"*Requirement:* {c.get('requirement_id', 'n/a')}",
         f"*Type:* {c.get('type', 'n/a')}  |  *Target:* {c.get('target', 'n/a')}",
@@ -261,6 +356,22 @@ def export_html(cases: list[dict], out_dir: Path) -> Path:
     by_prio = Counter(c.get("priority", "?") for c in cases)
     by_type = Counter(c.get("type", "?") for c in cases)
     by_target = Counter(c.get("target", "?") for c in cases)
+
+    # Coverage summary — one traceability row per requirement, gaps flagged
+    rtm_rows = build_rtm_rows(cases, out_dir)
+    gaps = sum(1 for r in rtm_rows if r["gap"])
+    coverage_rows = "".join(
+        f"""<tr class="{'gap' if r['gap'] else ''}">
+          <td>{html.escape(r['requirement'])}</td>
+          <td>{'GAP' if r['gap'] else 'OK'}</td>
+          <td>{r['total']}</td><td>{r['p0']}</td><td>{r['p1']}</td><td>{r['p2']}</td>
+          <td>{r['automatable']}</td><td>{r['manual']}</td>
+          <td class="ids">{html.escape(', '.join(r['case_ids']))}</td>
+        </tr>"""
+        for r in rtm_rows
+    )
+    gap_note = (f' — <span class="gap-note">{gaps} requirement(s) with no cases</span>'
+                if gaps else "")
 
     rows = []
     for c in cases:
@@ -326,12 +437,31 @@ def export_html(cases: list[dict], out_dir: Path) -> Path:
   .body {{ padding:.5rem 1rem; border-top:1px solid var(--border); margin-top:.5rem; }}
   .body h4 {{ margin:.5rem 0 .25rem; color:var(--muted); font-size:.85rem; text-transform:uppercase; }}
   code {{ background:#f0f0f0; padding:1px 5px; border-radius:3px; font-size:.85em; }}
+  .coverage {{ background:var(--card); border:1px solid var(--border); border-radius:8px;
+               padding:1rem 1.5rem; margin-bottom:1.5rem; }}
+  .coverage h2 {{ margin:0 0 .5rem; font-size:1rem; }}
+  .coverage table {{ border-collapse:collapse; width:100%; font-size:.85rem; }}
+  .coverage th, .coverage td {{ padding:.35rem .6rem; text-align:left;
+                                border-bottom:1px solid var(--border); }}
+  .coverage th {{ background:#2C3E50; color:#fff; font-weight:600; }}
+  .coverage tr:last-child td {{ border-bottom:none; }}
+  .coverage tr.gap td {{ background:#FDEDEC; color:#C0392B; font-weight:600; }}
+  .coverage td.ids {{ font-family:monospace; font-size:.8rem; }}
+  .gap-note {{ color:#C0392B; font-weight:600; }}
 </style></head><body>
 <h1>Test Cases <span style="color:var(--muted); font-weight:normal;">({len(cases)})</span></h1>
 <div class="stats">
   <div class="stat-block"><strong>Priority</strong>{"".join(f'<span><b>{p}</b>: {n}</span>' for p, n in by_prio.most_common())}</div>
   <div class="stat-block"><strong>Type</strong>{"".join(f'<span><b>{t}</b>: {n}</span>' for t, n in by_type.most_common())}</div>
   <div class="stat-block"><strong>Target</strong>{"".join(f'<span><b>{t}</b>: {n}</span>' for t, n in by_target.most_common())}</div>
+</div>
+<div class="coverage">
+  <h2>Requirement Coverage ({len(rtm_rows)}){gap_note}</h2>
+  <table>
+    <tr><th>Requirement</th><th>Coverage</th><th>Cases</th><th>P0</th><th>P1</th>
+        <th>P2</th><th>Auto</th><th>Manual</th><th>Case IDs</th></tr>
+    {coverage_rows}
+  </table>
 </div>
 {"".join(rows)}
 </body></html>"""
@@ -389,6 +519,34 @@ def export_markdown(cases: list[dict], out_dir: Path) -> Path:
         lines.append("---\n")
 
     path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 7. RTM CSV — requirement traceability matrix
+# ──────────────────────────────────────────────────────────────────────────────
+def export_rtm(cases: list[dict], out_dir: Path,
+               results: dict[str, str] | None = None) -> Path:
+    path = out_dir / "test_rtm.csv"
+    rows = build_rtm_rows(cases, out_dir, results)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        header = ["Requirement", "Coverage", "Total Cases", "P0", "P1", "P2",
+                  "Automatable", "Manual", "Case IDs"]
+        if results is not None:
+            header.append("Last Run")
+        w.writerow(header)
+        for r in rows:
+            row = [
+                r["requirement"],
+                "GAP" if r["gap"] else "OK",
+                r["total"], r["p0"], r["p1"], r["p2"],
+                r["automatable"], r["manual"],
+                ", ".join(r["case_ids"]),
+            ]
+            if results is not None:
+                row.append(r["last_run"] or "")
+            w.writerow(row)
     return path
 
 

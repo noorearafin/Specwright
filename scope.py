@@ -123,10 +123,18 @@ def _searchable_text(case: dict) -> str:
         case.get("requirement_id", ""),
         case.get("title", ""),
         case.get("expected", ""),
-        " ".join(case.get("steps") or []),
-        " ".join(case.get("preconditions") or []),
+        " ".join(_step_text(s) for s in case.get("steps") or []),
+        " ".join(_step_text(p) for p in case.get("preconditions") or []),
     ]
     return " ".join(str(p) for p in parts)
+
+
+def _step_text(step) -> str:
+    """Stage 2 emits steps as {"action": str, "data": str|null}; join the
+    searchable bits (like exporters._fmt_steps). Anything else is stringified."""
+    if isinstance(step, dict):
+        return " ".join(str(v) for v in (step.get("action"), step.get("data")) if v)
+    return str(step)
 
 
 def _priority_rank(case: dict) -> tuple:

@@ -10,9 +10,10 @@ from __future__ import annotations
 import io
 import json
 import os
-import tempfile
+import re
 import traceback
 import zipfile
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -20,10 +21,13 @@ import pandas as pd
 import streamlit as st
 
 from providers import get_provider
-from stages import stage1_plan, stage2_cases, stage3_automate
+from stages import stage1_plan, stage2_cases, stage2_regenerate, stage3_automate
 from scope import (PRESETS, apply_scope, coverage_report, describe_scope,
                    load_saved_scopes, save_scope)
-from exporters import run_exports, export_plan
+from exporters import run_exports, export_plan, build_rtm_rows, export_rtm
+from integrations.jira_push import push_cases
+from schema import validate_cases
+from runner import run_suite
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -78,16 +82,21 @@ CUSTOM_CSS = """
     60%  { transform: scale(1.25); }
     100% { transform: scale(1); }
   }
+  @keyframes sw-skeleton {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
 
-  /* Hero header with animated gradient accent + shine sweep */
+  /* Hero header with animated gradient accent + shine sweep —
+     a long slow loop so the shift reads as ambient, not busy */
   .sw-hero {
     position: relative;
     overflow: hidden;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #6d5bd0 100%);
-    background-size: 200% 200%;
-    animation: sw-gradient-shift 12s ease infinite, sw-fade-in-up 0.6s ease both;
+    background-size: 220% 220%;
+    animation: sw-gradient-shift 18s ease infinite, sw-fade-in-up 0.6s ease both;
     color: white;
-    padding: 1.5rem 1.75rem;
+    padding: 1.4rem 1.75rem;
     border-radius: 14px;
     margin-bottom: 1.25rem;
     box-shadow: 0 4px 20px rgba(102, 126, 234, 0.25);
@@ -105,26 +114,30 @@ CUSTOM_CSS = """
   .sw-hero h1 {
     color: white !important;
     margin: 0;
-    font-size: 1.9rem;
+    font-size: clamp(1.4rem, 1.1rem + 1.6vw, 1.9rem);
     font-weight: 700;
     letter-spacing: -0.5px;
+    line-height: 1.2;
   }
   .sw-hero p {
     color: rgba(255,255,255,0.85);
-    margin: 0.35rem 0 0;
-    font-size: 0.95rem;
+    margin: 0.3rem 0 0;
+    font-size: clamp(0.82rem, 0.74rem + 0.4vw, 0.95rem);
+    letter-spacing: 0.01em;
   }
 
-  /* Progress stepper */
+  /* Progress stepper — wraps on narrow screens instead of overflowing */
   .sw-stepper {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     gap: 0.5rem;
-    margin: 0 0 1.5rem;
-    padding: 0.75rem 0;
+    margin: 0 0 0.6rem;
+    padding: 0.75rem 0 0;
   }
   .sw-step {
     flex: 1;
+    min-width: 110px;
     padding: 0.6rem 0.5rem;
     text-align: center;
     border-radius: 10px;
@@ -144,6 +157,7 @@ CUSTOM_CSS = """
   .sw-step:nth-child(3) { animation-delay: 0.19s; }
   .sw-step:nth-child(4) { animation-delay: 0.26s; }
   .sw-step:nth-child(5) { animation-delay: 0.33s; }
+  .sw-step:nth-child(6) { animation-delay: 0.40s; }
   .sw-step:hover {
     transform: translateY(-2px);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
@@ -180,16 +194,67 @@ CUSTOM_CSS = """
     animation: sw-check-pop 0.4s ease both;
   }
   .sw-step.active .sw-step-num { background: #7c3aed; color: white; }
+  .sw-step.locked {
+    border-style: dashed;
+    background: #fcfcfd;
+    color: #9ca3af;
+    cursor: not-allowed;
+  }
+  .sw-step.locked:hover { transform: none; box-shadow: none; }
+  .sw-step.locked .sw-step-num { background: rgba(0,0,0,0.05); }
+
+  /* Thin progress bar under the stepper — width = share of stages done */
+  .sw-progress {
+    height: 5px;
+    border-radius: 999px;
+    background: #ede9fe;
+    margin: 0 0 1.25rem;
+    overflow: hidden;
+  }
+  .sw-progress-fill {
+    position: relative;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #667eea, #7c3aed);
+    transition: width 0.6s ease;
+    overflow: hidden;
+  }
+  /* Slow shimmer across the filled part only */
+  .sw-progress-fill::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.45), transparent);
+    animation: sw-shine 3.5s ease-in-out infinite;
+  }
 
   /* Section cards - softer borders + gentle entrance + hover lift */
-  [data-testid="stVerticalBlock"] > [style*="border"] {
-    border-radius: 12px !important;
+  [data-testid="stVerticalBlock"] > [style*="border"],
+  [data-testid="stVerticalBlockBorderWrapper"] {
+    border-radius: 14px !important;
     animation: sw-fade-in-up 0.5s ease both;
     transition: box-shadow 0.25s ease, transform 0.25s ease;
   }
-  [data-testid="stVerticalBlock"] > [style*="border"]:hover {
+  [data-testid="stVerticalBlock"] > [style*="border"]:hover,
+  [data-testid="stVerticalBlockBorderWrapper"]:hover {
     box-shadow: 0 6px 22px rgba(0, 0, 0, 0.06);
   }
+
+  /* Per-stage accent — one violet family, deepening tone per stage.
+     Each stage card holds an invisible .sw-tone-N marker; :has() tints
+     the card's left edge. No-op on browsers without :has(). */
+  .sw-tone { display: none; }
+  .element-container:has(.sw-tone),
+  [data-testid="stElementContainer"]:has(.sw-tone) { display: none; }
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.sw-tone) {
+    border-left: 4px solid #c4b5fd;
+    overflow: hidden;
+  }
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.sw-tone-2) { border-left-color: #a78bfa; }
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.sw-tone-3) { border-left-color: #8b5cf6; }
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.sw-tone-4) { border-left-color: #7c3aed; }
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.sw-tone-5) { border-left-color: #6d28d9; }
+  [data-testid="stVerticalBlockBorderWrapper"]:has(.sw-tone-6) { border-left-color: #5b21b6; }
 
   /* Priority badges in data_editor */
   .sw-badge {
@@ -204,6 +269,34 @@ CUSTOM_CSS = """
   .sw-badge-p0 { background: #fee2e2; color: #991b1b; }
   .sw-badge-p1 { background: #fef3c7; color: #92400e; }
   .sw-badge-p2 { background: #f3f4f6; color: #374151; }
+
+  /* Per-case result chips (Run panel) — pop in with a slight stagger */
+  .sw-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin: 0.5rem 0 0.75rem;
+  }
+  .sw-chip {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    white-space: nowrap;
+    animation: sw-pop 0.35s ease both;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .sw-chip:hover {
+    transform: translateY(-2px) scale(1.06);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
+  }
+  .sw-chip:nth-child(2n)  { animation-delay: 0.05s; }
+  .sw-chip:nth-child(3n)  { animation-delay: 0.10s; }
+  .sw-chip-pass { background: #d1fae5; color: #065f46; border: 1px solid #10b981; }
+  .sw-chip-fail { background: #fee2e2; color: #991b1b; border: 1px solid #f87171; }
+  .sw-chip-skip { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; }
+  .sw-chip-none { background: #f3f4f6; color: #6b7280; border: 1px dashed #d1d5db; }
 
   /* Error banner — shakes in to draw attention */
   .sw-error {
@@ -237,6 +330,33 @@ CUSTOM_CSS = """
     box-shadow: 0 6px 16px rgba(102, 126, 234, 0.12);
     border-color: #c7d2fe;
   }
+  [data-testid="stMetric"] [data-testid="stMetricValue"] {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  [data-testid="stMetric"] [data-testid="stMetricLabel"] {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #64748b;
+  }
+
+  /* Dataframes / data editors — rounded frame to match the cards */
+  [data-testid="stDataFrame"], [data-testid="stDataEditor"] {
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  /* Static tables — sticky header + gentle row hover */
+  [data-testid="stTable"] thead th {
+    position: sticky;
+    top: 0;
+    background: #f8fafc;
+    z-index: 1;
+  }
+  [data-testid="stTable"] tbody tr { transition: background 0.15s ease; }
+  [data-testid="stTable"] tbody tr:hover { background: #f5f3ff; }
 
   /* Buttons — lift + animated shine sweep on hover */
   .stButton > button {
@@ -266,6 +386,23 @@ CUSTOM_CSS = """
   }
   .stButton > button[kind="primary"]:hover::after {
     animation: sw-shine 0.9s ease;
+  }
+  /* Secondary buttons — quiet ghost style in the same palette */
+  .stButton > button[kind="secondary"] {
+    background: transparent;
+    border: 1px solid #ddd6fe;
+    color: #5b21b6;
+  }
+  .stButton > button[kind="secondary"]:hover {
+    border-color: #a78bfa;
+    background: #f5f3ff;
+    transform: translateY(-1px);
+  }
+  /* Keyboard focus — visible ring on every button */
+  .stButton > button:focus-visible,
+  [data-testid="stDownloadButton"] > button:focus-visible {
+    outline: 3px solid rgba(124, 58, 237, 0.35);
+    outline-offset: 2px;
   }
 
   /* Download buttons — subtle lift */
@@ -300,10 +437,59 @@ CUSTOM_CSS = """
   [data-testid="stSpinner"] > div {
     border-top-color: #7c3aed !important;
   }
+  /* Busy state — spinner sits on a soft pulsing skeleton strip */
+  [data-testid="stSpinner"] {
+    padding: 0.6rem 0.9rem;
+    border-radius: 10px;
+    background: linear-gradient(90deg, #f5f3ff 25%, #ede9fe 50%, #f5f3ff 75%);
+    background-size: 200% 100%;
+    animation: sw-skeleton 1.6s ease-in-out infinite;
+  }
+
+  /* Status pills — compile badge and friends */
+  .sw-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    animation: sw-pop 0.35s ease both;
+  }
+  .sw-pill-pass { background: #d1fae5; color: #065f46; border: 1px solid #10b981; }
+  .sw-pill-fail { background: #fee2e2; color: #991b1b; border: 1px solid #f87171; }
+  .sw-pill-skip { background: #fef3c7; color: #92400e; border: 1px solid #fbbf24; }
+
+  /* Empty states — friendly per-stage placeholders */
+  .sw-empty {
+    text-align: center;
+    padding: 1.6rem 1rem;
+    border: 1px dashed #ddd6fe;
+    border-radius: 12px;
+    background: #fbfaff;
+    animation: sw-fade-in 0.5s ease both;
+  }
+  .sw-empty-icon { font-size: 1.6rem; margin-bottom: 0.3rem; }
+  .sw-empty-title { font-weight: 600; color: #4c1d95; font-size: 0.95rem; }
+  .sw-empty-hint { color: #6b7280; font-size: 0.85rem; margin-top: 0.2rem; }
 
   /* Hide the default Streamlit header/menu for a cleaner look */
   #MainMenu {visibility: hidden;}
   footer {visibility: hidden;}
+
+  /* Narrow screens (~400px) — hero, stepper and gutters stay comfortable */
+  @media (max-width: 480px) {
+    .sw-hero { padding: 1.1rem 1rem; border-radius: 12px; }
+    .sw-stepper { gap: 0.35rem; }
+    .sw-step {
+      min-width: calc(33.3% - 0.35rem);
+      font-size: 0.75rem;
+      padding: 0.5rem 0.3rem;
+    }
+    .sw-chips { gap: 0.3rem; }
+    .block-container { padding-left: 1rem !important; padding-right: 1rem !important; }
+  }
 
   /* Respect users who prefer reduced motion — disable all animation */
   @media (prefers-reduced-motion: reduce) {
@@ -330,18 +516,37 @@ DEFAULTS = {
     "custom_priorities": [],
     "custom_types": [],
     "custom_targets": [],
-    "workspace": None,
+    "project": None,            # active project slug under PROJECTS_DIR
     "stage3_done": False,
+    "run_outcome": None,        # last run_suite() outcome dict
     "errors": [],               # list of {stage, short, detail, time}
 }
 for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
 
+# Projects live next to the app so work survives refreshes and restarts
+PROJECTS_DIR = Path(__file__).parent / "projects"
+
+
+def slugify(name: str) -> str:
+    """Fold a project name to a safe folder slug: lowercase, [a-z0-9-]."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug or "default"
+
+
+def list_projects() -> list[str]:
+    """Existing project folders, sorted — empty on a fresh checkout."""
+    if not PROJECTS_DIR.is_dir():
+        return []
+    return sorted(p.name for p in PROJECTS_DIR.iterdir() if p.is_dir())
+
 
 def get_workspace() -> Path:
-    if st.session_state.workspace is None:
-        st.session_state.workspace = Path(tempfile.mkdtemp(prefix="specwright_"))
-    return st.session_state.workspace
+    """Folder of the active project — created on first write ("default"
+    when the user never picked one)."""
+    ws = PROJECTS_DIR / (st.session_state.project or "default")
+    ws.mkdir(parents=True, exist_ok=True)
+    return ws
 
 
 def reset_from(stage: int) -> None:
@@ -352,10 +557,61 @@ def reset_from(stage: int) -> None:
         st.session_state.cases_original = None
     if stage <= 3:
         st.session_state.stage3_done = False
+        st.session_state.run_outcome = None
+
+
+def load_project(slug: str) -> None:
+    """Switch to project <slug> and rehydrate session state from its files.
+
+    Each saved artifact restores its stage — prd.md, test_plan.md,
+    test_cases.json, playwright.config.ts — so the user resumes exactly
+    where they left off after a refresh, restart or project switch.
+    """
+    st.session_state.project = slug
+    st.session_state.prd_text = ""
+    reset_from(1)
+    # Drop stale editor widget state so it re-seeds from the new project
+    for wk in ("plan_edit", "case_editor"):
+        st.session_state.pop(wk, None)
+
+    ws = PROJECTS_DIR / slug
+    prd_path = ws / "prd.md"
+    if prd_path.exists():
+        st.session_state.prd_text = prd_path.read_text()
+    plan_path = ws / "test_plan.md"
+    if plan_path.exists():
+        st.session_state.plan = plan_path.read_text()
+    cases_path = ws / "test_cases.json"
+    if cases_path.exists():
+        try:
+            cases = json.loads(cases_path.read_text())
+        except json.JSONDecodeError:
+            cases = None
+        if isinstance(cases, list) and cases:
+            # Re-validate on load: the file may have been hand-edited and
+            # exporters/Stage 3 assume schema-complete cases.
+            cases = validate_cases(cases)
+            st.session_state.cases = cases
+            st.session_state.cases_original = json.loads(json.dumps(cases))
+    if (ws / "playwright.config.ts").exists():
+        st.session_state.stage3_done = True
+
+
+# On app start (fresh session) pick a project and rehydrate it:
+# "default" when present or nothing exists yet, else the first saved one.
+if st.session_state.project is None:
+    _existing = list_projects()
+    _initial = "default" if ("default" in _existing or not _existing) else _existing[0]
+    if (PROJECTS_DIR / _initial).is_dir():
+        load_project(_initial)
+    else:
+        st.session_state.project = _initial
 
 
 def current_stage() -> int:
-    """Determine active step (1-5) based on what's done."""
+    """Determine active step (1-6) based on what's done."""
+    if st.session_state.run_outcome:
+        return 6
     if st.session_state.stage3_done:
         return 5
     if st.session_state.cases:
@@ -399,6 +655,83 @@ def _dl_button(col, path: Path, label: str, mime: str, key_suffix: str = "") -> 
             use_container_width=True,
             key=f"dl_{path.name}_{key_suffix}",
         )
+
+
+def _empty_state(icon: str, title: str, hint: str) -> None:
+    """Friendly placeholder shown before a stage has anything to display."""
+    st.markdown(
+        f'<div class="sw-empty">'
+        f'<div class="sw-empty-icon">{icon}</div>'
+        f'<div class="sw-empty-title">{title}</div>'
+        f'<div class="sw-empty-hint">{hint}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _save_case_details(case_id: str, steps: list[dict],
+                       preconditions: list[str]) -> None:
+    """Write steps/preconditions into the matching case, persist and re-export."""
+    for c in st.session_state.cases or []:
+        if c.get("id") == case_id:
+            c["steps"] = steps
+            c["preconditions"] = preconditions
+            break
+    ws = get_workspace()
+    (ws / "test_cases.json").write_text(
+        json.dumps(st.session_state.cases, indent=2))
+    try:
+        run_exports(st.session_state.cases, ws,
+                    ["csv", "excel", "jira", "testrail", "html", "markdown", "rtm"])
+    except Exception as e:  # noqa: BLE001
+        log_error("Case detail re-export", e)
+
+
+def _case_detail_body(case: dict) -> None:
+    """Steps + preconditions editor for one case (dialog or expander body)."""
+    case_id = case.get("id", "")
+    steps_df = pd.DataFrame(
+        [{"Action": s.get("action", ""), "Data": s.get("data") or ""}
+         for s in case.get("steps") or []],
+        columns=["Action", "Data"],
+    )
+    edited_steps = st.data_editor(
+        steps_df,
+        use_container_width=True,
+        num_rows="dynamic",
+        hide_index=True,
+        column_config={
+            "Action": st.column_config.TextColumn("Action", width="large"),
+            "Data": st.column_config.TextColumn("Data"),
+        },
+        key=f"steps_editor_{case_id}",
+    )
+    precond_text = st.text_area(
+        "Preconditions (one per line)",
+        value="\n".join(case.get("preconditions") or []),
+        key=f"precond_{case_id}",
+    )
+    if st.button("💾 Save case details", type="primary",
+                 key=f"save_detail_{case_id}"):
+        steps = []
+        for _, srow in edited_steps.iterrows():
+            action = "" if pd.isna(srow["Action"]) else str(srow["Action"]).strip()
+            data = "" if pd.isna(srow["Data"]) else str(srow["Data"]).strip()
+            if not action and not data:
+                continue  # blank row left behind by the editor
+            steps.append({"action": action, "data": data or None})
+        preconditions = [ln.strip() for ln in precond_text.splitlines()
+                         if ln.strip()]
+        _save_case_details(case_id, steps, preconditions)
+        st.toast(f"Saved {case_id} steps & preconditions", icon="✅")
+        st.rerun()
+
+
+if hasattr(st, "dialog"):
+    @st.dialog("Edit steps & preconditions", width="large")
+    def _case_detail_editor(case: dict) -> None:
+        st.caption(f"{case.get('id', '')} — {case.get('title', '')}")
+        _case_detail_body(case)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -465,12 +798,56 @@ with st.sidebar:
         st.markdown("[Download Ollama →](https://ollama.com/download)")
 
     st.divider()
+    st.markdown("### 📁 Project")
+    projects = list_projects()
+    current = st.session_state.project
+    options = projects if current in projects else [current] + projects
+    picked = st.selectbox(
+        "Active project",
+        options,
+        index=options.index(current),
+        help="Each project keeps its PRD, plan, cases and suite "
+             "under ./projects/ — switching rehydrates where you left off.",
+    )
+    if picked != current:
+        load_project(picked)
+        st.rerun()
+
+    new_project = st.text_input(
+        "New project",
+        placeholder="e.g. checkout-flow",
+        help="Name is slugified to lowercase letters, digits and hyphens",
+    )
+    if st.button("➕ Create project", use_container_width=True,
+                 disabled=not new_project.strip()):
+        slug = slugify(new_project)
+        (PROJECTS_DIR / slug).mkdir(parents=True, exist_ok=True)
+        load_project(slug)
+        st.rerun()
+
+    st.divider()
+    with st.expander("🔗 Jira integration"):
+        st.text_input(
+            "Base URL",
+            placeholder="https://yourteam.atlassian.net",
+            key="jira_base_url",
+            help="Your Jira Cloud (or Server) root URL",
+        )
+        st.text_input(
+            "Project key",
+            placeholder="e.g. QA",
+            key="jira_project_key",
+        )
+        st.caption("Tokens never pass through the UI — set the `JIRA_EMAIL` "
+                   "and `JIRA_TOKEN` env vars before launching the app.")
+
+    st.divider()
     st.markdown("### 🗂 Workspace")
-    ws = get_workspace()
-    st.code(str(ws), language="text")
-    if st.button("🗑 Reset workspace", use_container_width=True):
-        for k in DEFAULTS:
-            st.session_state[k] = DEFAULTS[k]
+    st.code(str(PROJECTS_DIR / current), language="text")
+    if st.button("↺ Reload project from disk", use_container_width=True,
+                 help="Discard unsaved session state and rehydrate from "
+                      "the project's saved files"):
+        load_project(current)
         st.rerun()
 
 
@@ -491,17 +868,30 @@ STEPS = [
     ("Test Cases", 3),
     ("Scope", 4),
     ("Suite", 5),
+    ("Run", 6),
 ]
 active = current_stage()
 stepper_html = '<div class="sw-stepper">'
 for label, num in STEPS:
-    cls = "done" if num < active else ("active" if num == active else "")
+    if num < active:
+        cls, marker = "done", "✓"
+    elif num == active:
+        cls, marker = "active", str(num)
+    else:
+        cls, marker = "locked", str(num)
     stepper_html += (
         f'<div class="sw-step {cls}">'
-        f'<span class="sw-step-num">{num}</span>{label}'
+        f'<span class="sw-step-num">{marker}</span>{label}'
         f'</div>'
     )
 stepper_html += "</div>"
+# Thin progress bar under the stepper — share of stages completed so far
+pct = round((active - 1) / (len(STEPS) - 1) * 100)
+stepper_html += (
+    f'<div class="sw-progress" role="progressbar" aria-valuenow="{pct}" '
+    f'aria-valuemin="0" aria-valuemax="100">'
+    f'<div class="sw-progress-fill" style="width:{pct}%"></div></div>'
+)
 st.markdown(stepper_html, unsafe_allow_html=True)
 
 
@@ -542,6 +932,8 @@ if st.session_state.errors:
 # ══════════════════════════════════════════════════════════════════════════════
 with st.container(border=True):
     st.subheader("① Requirements")
+    # Invisible marker — CSS tints this card's left-edge accent
+    st.markdown('<span class="sw-tone sw-tone-1"></span>', unsafe_allow_html=True)
 
     tab_upload, tab_paste, tab_sample = st.tabs(
         ["📎 Upload file", "✍️ Paste text", "📋 Use sample"]
@@ -555,6 +947,7 @@ with st.container(border=True):
             if text != st.session_state.prd_text:
                 st.session_state.prd_text = text
                 reset_from(1)
+                (get_workspace() / "prd.md").write_text(text)
     with tab_paste:
         pasted = st.text_area(
             "Paste here", height=200, label_visibility="collapsed",
@@ -564,12 +957,14 @@ with st.container(border=True):
         if pasted and pasted != st.session_state.prd_text:
             st.session_state.prd_text = pasted
             reset_from(1)
+            (get_workspace() / "prd.md").write_text(pasted)
     with tab_sample:
         sample_path = Path(__file__).parent / "examples" / "login_prd.md"
         if sample_path.exists():
             if st.button("Load login PRD sample", use_container_width=True):
                 st.session_state.prd_text = sample_path.read_text()
                 reset_from(1)
+                (get_workspace() / "prd.md").write_text(st.session_state.prd_text)
                 st.rerun()
 
     if st.session_state.prd_text:
@@ -582,6 +977,7 @@ with st.container(border=True):
 # ══════════════════════════════════════════════════════════════════════════════
 with st.container(border=True):
     st.subheader("② Test Plan")
+    st.markdown('<span class="sw-tone sw-tone-2"></span>', unsafe_allow_html=True)
 
     col1, col2 = st.columns([1, 3])
     with col1:
@@ -613,7 +1009,9 @@ with st.container(border=True):
         if st.session_state.plan:
             st.success(f"✓ Plan generated · {len(st.session_state.plan):,} chars")
         else:
-            st.info("Click **Generate plan** to produce an IEEE-829 test plan.")
+            _empty_state("📝", "No plan yet",
+                         "Click <b>Generate plan</b> to draft an IEEE-829 "
+                         "test plan from your requirements.")
 
     if st.session_state.plan:
         with st.expander("📝 Review & edit the plan", expanded=False):
@@ -643,10 +1041,11 @@ with st.container(border=True):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Stage ③ — Test Cases (editable table + 6-format exports)
+# Stage ③ — Test Cases (editable table + 7-format exports)
 # ══════════════════════════════════════════════════════════════════════════════
 with st.container(border=True):
     st.subheader("③ Test Cases")
+    st.markdown('<span class="sw-tone sw-tone-3"></span>', unsafe_allow_html=True)
 
     col1, col2 = st.columns([1, 3])
     with col1:
@@ -663,9 +1062,9 @@ with st.container(border=True):
                     st.session_state.cases = cases
                     st.session_state.cases_original = json.loads(json.dumps(cases))
                     _run_safe(
-                        "Exporting to 6 formats...",
+                        "Exporting to 7 formats...",
                         run_exports, cases, get_workspace(),
-                        ["csv", "excel", "jira", "testrail", "html", "markdown"],
+                        ["csv", "excel", "jira", "testrail", "html", "markdown", "rtm"],
                     )
                     reset_from(3)
                     st.rerun()
@@ -678,10 +1077,60 @@ with st.container(border=True):
             automatable = sum(1 for c in cases if c.get("automatable", True))
             st.success(f"✓ {len(cases)} cases · {automatable} automatable")
         else:
-            st.info("Click **Generate cases** to produce detailed test cases.")
+            _empty_state("🧾", "No test cases yet",
+                         "Click <b>Generate cases</b> to turn the plan into "
+                         "detailed, editable test cases.")
 
     if st.session_state.cases:
         cases = st.session_state.cases
+
+        # Coverage integrity — flag requirements that generated zero cases
+        # (from generation_report.json) and offer a targeted regeneration.
+        report_path = get_workspace() / "generation_report.json"
+        gen_report = {}
+        if report_path.exists():
+            try:
+                gen_report = json.loads(report_path.read_text())
+            except json.JSONDecodeError:
+                gen_report = {}
+        reqs_present = {c.get("requirement_id") for c in cases}
+        missing = {
+            req: entry for req, entry in gen_report.items()
+            if (not entry.get("generated") or entry.get("error"))
+            and req not in reqs_present
+        }
+        if missing:
+            bullet_list = "\n".join(
+                f"- **{req}** — estimated {entry.get('estimated', '?')} cases, "
+                f"got 0{' · ' + str(entry['error']) if entry.get('error') else ''}"
+                for req, entry in sorted(missing.items())
+            )
+            st.error(f"⚠️ Requirements with **zero generated cases**:\n\n{bullet_list}")
+            if st.button("🔁 Regenerate missing", key="regen_missing"):
+                llm = _run_safe("Initializing LLM...", get_provider, llm_cfg)
+                if llm:
+                    per_req = {req: int(entry.get("estimated") or 3)
+                               for req, entry in missing.items()}
+                    results = _run_safe(
+                        f"Regenerating cases for {', '.join(per_req)}...",
+                        stage2_regenerate, llm, st.session_state.prd_text,
+                        st.session_state.plan, per_req, get_workspace(),
+                    )
+                    if results is not None:
+                        merged = cases + [c for chunk in results.values()
+                                          for c in chunk]
+                        for idx, case in enumerate(merged, 1):
+                            case["id"] = f"TC-{idx:03d}"
+                        st.session_state.cases = merged
+                        ws = get_workspace()
+                        (ws / "test_cases.json").write_text(
+                            json.dumps(merged, indent=2))
+                        _run_safe(
+                            "Re-exporting to 7 formats...",
+                            run_exports, merged, ws,
+                            ["csv", "excel", "jira", "testrail", "html", "markdown", "rtm"],
+                        )
+                        st.rerun()
 
         # Metrics row
         c1, c2, c3, c4 = st.columns(4)
@@ -690,14 +1139,32 @@ with st.container(border=True):
         c3.metric("UI tests", sum(1 for c in cases if c.get("target") == "ui"))
         c4.metric("API tests", sum(1 for c in cases if c.get("target") == "api"))
 
+        # Requirement traceability — same rows as the RTM export, kept
+        # permanently visible so coverage gaps never hide behind a toast.
+        st.markdown("##### 🧭 Requirement coverage (RTM)")
+        rtm_rows = build_rtm_rows(cases, get_workspace())
+        rtm_df = pd.DataFrame([{
+            "Requirement": r["requirement"],
+            "Coverage": "⚠️ GAP" if r["gap"] else "✓ OK",
+            "Cases": r["total"],
+            "P0": r["p0"],
+            "P1": r["p1"],
+            "P2": r["p2"],
+            "Auto": r["automatable"],
+            "Manual": r["manual"],
+            "Case IDs": ", ".join(r["case_ids"]),
+        } for r in rtm_rows])
+        st.dataframe(rtm_df, use_container_width=True, hide_index=True)
+
         # Editable table via data_editor
         st.markdown("##### ✏️ Edit cases inline (add, remove, modify)")
-        st.caption("Changes auto-save and re-export to all 6 formats on every edit.")
+        st.caption("Changes auto-save and re-export to all 7 formats on every edit.")
 
         df = pd.DataFrame([{
             "ID": c.get("id", ""),
             "REQ": c.get("requirement_id", ""),
             "Title": c.get("title", ""),
+            "Steps": len(c.get("steps") or []),
             "Type": c.get("type", ""),
             "Target": c.get("target", ""),
             "Priority": c.get("priority", ""),
@@ -716,6 +1183,9 @@ with st.container(border=True):
                 "ID": st.column_config.TextColumn("ID", width="small"),
                 "REQ": st.column_config.TextColumn("REQ", width="small"),
                 "Title": st.column_config.TextColumn("Title", width="large"),
+                "Steps": st.column_config.NumberColumn(
+                    "Steps", width="small",
+                    help="Step count — 0 means the case has no steps yet"),
                 "Type": st.column_config.SelectboxColumn("Type", options=[
                     "functional", "negative", "boundary", "security",
                     "accessibility", "performance", "contract",
@@ -725,15 +1195,20 @@ with st.container(border=True):
                 "Expected": st.column_config.TextColumn("Expected", width="large"),
                 "Automatable": st.column_config.CheckboxColumn("Auto?"),
             },
+            disabled=["Steps"],
             key="case_editor",
         )
 
         # Detect changes and re-save/re-export
         edited_cases = []
         for i, row in edited_df.iterrows():
-            # Preserve original fields we don't expose in the editor
+            # Preserve original fields we don't expose in the editor.
+            # Rows added in the grid start with empty steps/preconditions so
+            # exporters and Stage 3 never see missing fields.
             original = next((c for c in cases if c.get("id") == row["ID"]), {})
             edited_cases.append({
+                "steps": [],
+                "preconditions": [],
                 **original,
                 "id": row["ID"],
                 "requirement_id": row["REQ"],
@@ -752,16 +1227,42 @@ with st.container(border=True):
             (ws / "test_cases.json").write_text(json.dumps(edited_cases, indent=2))
             try:
                 run_exports(edited_cases, ws,
-                            ["csv", "excel", "jira", "testrail", "html", "markdown"])
+                            ["csv", "excel", "jira", "testrail", "html", "markdown", "rtm"])
             except Exception as e:
                 log_error("Stage 2 edit re-export", e)
             st.toast(f"Saved · {len(edited_cases)} cases", icon="✅")
             st.rerun()
 
-        # Downloads — 6 formats
+        # Per-case detail editor — steps & preconditions don't fit the grid
+        # above, so edit them here (dialog where supported, expander otherwise).
+        st.markdown("##### 🪜 Steps & preconditions")
+        st.caption("Pick a case to edit its steps and preconditions — "
+                   "the grid above only shows the step count.")
+        id_titles = {c.get("id", ""): c.get("title", "") for c in cases}
+        dc1, dc2 = st.columns([3, 1])
+        detail_id = dc1.selectbox(
+            "Case to edit",
+            list(id_titles),
+            format_func=lambda cid: f"{cid} — {(id_titles.get(cid) or '')[:70]}",
+            label_visibility="collapsed",
+            key="detail_case_pick",
+        )
+        detail_case = next(
+            (c for c in cases if c.get("id") == detail_id), None)
+        if detail_case is not None:
+            if hasattr(st, "dialog"):
+                with dc2:
+                    if st.button("✏️ Edit details", use_container_width=True,
+                                 key="open_detail_editor"):
+                        _case_detail_editor(detail_case)
+            else:
+                with st.expander(f"✏️ Edit {detail_id}", expanded=False):
+                    _case_detail_body(detail_case)
+
+        # Downloads — 7 formats, plus the direct Jira upsert
         st.markdown("##### 📦 Download test cases")
         ws = get_workspace()
-        d = st.columns(6)
+        d = st.columns(8)
         _dl_button(d[0], ws / "test_cases.csv",          "CSV",       "text/csv", "cases")
         _dl_button(d[1], ws / "test_cases.xlsx",         "Excel",
                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "cases")
@@ -769,6 +1270,30 @@ with st.container(border=True):
         _dl_button(d[3], ws / "test_cases.testrail.csv", "TestRail",  "text/csv", "cases")
         _dl_button(d[4], ws / "test_cases.html",         "HTML",      "text/html", "cases")
         _dl_button(d[5], ws / "test_cases.md",           "Markdown",  "text/markdown", "cases")
+        _dl_button(d[6], ws / "test_rtm.csv",            "RTM",       "text/csv", "cases")
+
+        # Push straight into Jira — upserts by specwright-<TC-ID> label so
+        # repeated pushes update issues instead of duplicating them.
+        jira_cfg = {
+            "base_url": st.session_state.get("jira_base_url", ""),
+            "project_key": st.session_state.get("jira_project_key", ""),
+        }
+        jira_ready = bool(jira_cfg["base_url"] and jira_cfg["project_key"])
+        with d[7]:
+            if st.button("🚀 Push to Jira", use_container_width=True,
+                         key="push_jira", disabled=not jira_ready,
+                         help="Upsert every case as a Jira issue — set the "
+                              "base URL and project key in the sidebar"):
+                result = _run_safe("Pushing cases to Jira...",
+                                   push_cases, cases, jira_cfg)
+                if result:
+                    # Persist the issue keys stamped on each case
+                    (ws / "test_cases.json").write_text(
+                        json.dumps(cases, indent=2))
+                    st.toast(f"Jira: {result['created']} created, "
+                             f"{result['updated']} updated", icon="✅")
+        if not jira_ready:
+            st.caption("🔗 Configure Jira in the sidebar to enable the push.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -776,9 +1301,12 @@ with st.container(border=True):
 # ══════════════════════════════════════════════════════════════════════════════
 with st.container(border=True):
     st.subheader("④ Automation Scope")
+    st.markdown('<span class="sw-tone sw-tone-4"></span>', unsafe_allow_html=True)
 
     if not st.session_state.cases:
-        st.info("Generate test cases first.")
+        _empty_state("🎯", "Nothing to scope yet",
+                     "Generate test cases in Stage ③, then choose "
+                     "what to automate here.")
     else:
         cases = st.session_state.cases
 
@@ -890,15 +1418,24 @@ with st.container(border=True):
                 f"({len(cov['covered'])}/{cov['total_requirements']} requirements covered) "
                 f"· {describe_scope(scope)}")
         with c2:
+            overwrite = st.checkbox(
+                "Overwrite existing tests",
+                help="Regenerate every selected file, even hand-edited ones. "
+                     "Unchecked, only files whose cases changed are rewritten "
+                     "(hand-edited files get a .new sibling instead)")
             if st.button("▶ Generate tests", type="primary",
                          disabled=not selected, use_container_width=True):
                 llm = _run_safe("Initializing LLM...", get_provider, llm_cfg)
                 if llm:
-                    _run_safe(
+                    result = _run_safe(
                         f"Stage 3 — generating {len(selected)} Playwright tests...",
                         stage3_automate, llm, selected, get_workspace(),
+                        all_cases=cases,
+                        regen="all" if overwrite else "changed",
                     )
-                    st.session_state.stage3_done = True
+                    # None means _run_safe caught an error — don't mark done
+                    if result is not None:
+                        st.session_state.stage3_done = True
                     st.rerun()
 
 
@@ -907,9 +1444,12 @@ with st.container(border=True):
 # ══════════════════════════════════════════════════════════════════════════════
 with st.container(border=True):
     st.subheader("⑤ Playwright Suite")
+    st.markdown('<span class="sw-tone sw-tone-5"></span>', unsafe_allow_html=True)
 
     if not st.session_state.stage3_done:
-        st.info("Run Stage ④ to generate Playwright tests.")
+        _empty_state("🎭", "No suite generated yet",
+                     "Pick a scope in Stage ④ and generate tests — the "
+                     "Playwright project appears here, ready to download.")
     else:
         ws = get_workspace()
         generated = sorted(
@@ -925,6 +1465,36 @@ with st.container(border=True):
         )
 
         st.success(f"✓ {len(generated)} files generated")
+
+        # Compile-status badge from the Stage-3 verify gate (when it ran)
+        verify_path = ws / "verify_report.json"
+        if verify_path.exists():
+            try:
+                verify = json.loads(verify_path.read_text())
+            except json.JSONDecodeError:
+                verify = {}
+            status = verify.get("status")
+            if status == "passed":
+                st.markdown(
+                    '<span class="sw-pill sw-pill-pass">✓ Compile check '
+                    'passed</span>', unsafe_allow_html=True)
+                st.caption("tsc and `playwright test --list` are clean")
+            elif status == "failed":
+                broken = sorted(verify.get("errors", {}))
+                st.markdown(
+                    '<span class="sw-pill sw-pill-fail">✕ Compile check '
+                    'failed</span>', unsafe_allow_html=True)
+                st.caption(
+                    f"{len(broken)} file(s) still broken after repair: "
+                    f"{', '.join(f'`{f}`' for f in broken) or 'see AUTOMATION_REPORT.md'}")
+            elif status == "skipped":
+                reason = next(
+                    (s.get("detail", "") for s in verify.get("steps", [])
+                     if not s.get("ok")), "toolchain unavailable")
+                st.markdown(
+                    '<span class="sw-pill sw-pill-skip">◌ Compile check '
+                    'skipped</span>', unsafe_allow_html=True)
+                st.caption(reason)
 
         with st.expander("📁 File tree", expanded=True):
             for f in generated:
@@ -955,3 +1525,122 @@ with st.container(border=True):
             use_container_width=True,
             type="primary",
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Stage ⑥ — Run the suite, map results back to TC-IDs
+# ══════════════════════════════════════════════════════════════════════════════
+with st.container(border=True):
+    st.subheader("⑥ Run & Results")
+    st.markdown('<span class="sw-tone sw-tone-6"></span>', unsafe_allow_html=True)
+
+    if not st.session_state.stage3_done:
+        _empty_state("🏁", "Nothing to run yet",
+                     "Generate the Playwright suite in Stage ④ — results "
+                     "map back to their TC-IDs here.")
+    else:
+        c1, c2, c3 = st.columns([2, 2, 1])
+        base_url = c1.text_input(
+            "BASE_URL", placeholder="http://localhost:3000",
+            help="Passed to the suite as the BASE_URL env var (UI tests)")
+        api_url = c2.text_input(
+            "API_URL", placeholder="http://localhost:3000/api",
+            help="Passed to the suite as the API_URL env var (API tests)")
+        with c3:
+            st.markdown('<div style="height:1.75rem"></div>', unsafe_allow_html=True)
+            run_clicked = st.button("▶ Run suite", type="primary",
+                                    use_container_width=True)
+
+        if run_clicked:
+            outcome = _run_safe(
+                "Running Playwright suite (npx playwright test)...",
+                run_suite, get_workspace(),
+                base_url=base_url or None, api_url=api_url or None,
+            )
+            if outcome is not None:
+                st.session_state.run_outcome = outcome
+                if outcome["status"] == "completed" and st.session_state.cases:
+                    # Persist the latest outcome on each case and re-export
+                    # the RTM so it gains the Last Run column.
+                    results = outcome["results"]
+                    for case in st.session_state.cases:
+                        if case.get("id") in results:
+                            case["last_result"] = results[case["id"]]
+                    ws = get_workspace()
+                    (ws / "test_cases.json").write_text(
+                        json.dumps(st.session_state.cases, indent=2))
+                    try:
+                        export_rtm(st.session_state.cases, ws,
+                                   results={tc: r["status"]
+                                            for tc, r in results.items()})
+                    except Exception as e:  # noqa: BLE001
+                        log_error("Run — RTM re-export", e)
+                st.rerun()
+
+        outcome = st.session_state.run_outcome
+        if outcome and outcome["status"] == "error":
+            st.error(f"🔴 Run failed: {outcome['error']}")
+        elif outcome:
+            results = outcome["results"]
+            counts = Counter(r["status"] for r in results.values())
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Executed", len(results))
+            m2.metric("Passed", counts.get("passed", 0))
+            m3.metric("Failed", counts.get("failed", 0))
+            m4.metric("Skipped", counts.get("skipped", 0))
+
+            if not results:
+                st.warning("Suite ran, but no TC-IDs were found in the test "
+                           "titles — nothing to map back to cases.")
+            else:
+                # Per-case status chips (cases that never ran show as grey)
+                st.markdown("##### 🏷 Per-case results")
+                chip_cls = {"passed": "pass", "failed": "fail",
+                            "skipped": "skip"}
+                known_ids = {c.get("id") for c in (st.session_state.cases or [])}
+                chips = []
+                for tc in sorted(known_ids | set(results)):
+                    r = results.get(tc)
+                    if r:
+                        cls = chip_cls.get(r["status"], "none")
+                        label = f"{tc} · {r['status']} · {r['duration_ms']:,}ms"
+                    else:
+                        cls = "none"
+                        label = f"{tc} · not run"
+                    chips.append(f'<span class="sw-chip sw-chip-{cls}">{label}</span>')
+                st.markdown(f'<div class="sw-chips">{"".join(chips)}</div>',
+                            unsafe_allow_html=True)
+
+                failed_cases = {tc: r for tc, r in results.items()
+                                if r["status"] == "failed"}
+                if failed_cases:
+                    with st.expander(f"🔍 Failure details ({len(failed_cases)})"):
+                        for tc, r in sorted(failed_cases.items()):
+                            st.markdown(f"**{tc}**")
+                            st.code(r["error"] or "no error message captured",
+                                    language="text")
+
+            # Per-requirement roll-up (joined through test_cases.json)
+            if outcome["aggregate"]:
+                st.markdown("##### 🧭 Per-requirement summary")
+                status_label = {"passed": "🟢 passed", "failed": "🔴 failed",
+                                "skipped": "🟡 skipped"}
+                agg_df = pd.DataFrame([{
+                    "Requirement": req,
+                    "Status": status_label.get(e["status"], "⚪ not run"),
+                    "Passed": e["passed"],
+                    "Failed": e["failed"],
+                    "Skipped": e["skipped"],
+                    "Not run": e["not_run"],
+                    "Total": e["total"],
+                } for req, e in sorted(outcome["aggregate"].items())])
+                st.dataframe(agg_df, use_container_width=True, hide_index=True)
+
+            # Downloads — raw mapping + the RTM with its Last Run column
+            ws = get_workspace()
+            d1, d2 = st.columns(2)
+            _dl_button(d1, ws / "results.json", "results.json",
+                       "application/json", "run")
+            _dl_button(d2, ws / "test_rtm.csv", "RTM (with Last Run)",
+                       "text/csv", "run")
